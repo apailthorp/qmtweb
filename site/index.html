@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>pailthorp.net — Quick METAR &amp; TAF</title>
+    <meta name="description" content="Quick METAR and TAF plus weather links for the Pacific Northwest." />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>pailthorp.net</h1>
+        <p class="tagline">Quick METAR &amp; TAF · Pacific Northwest weather links</p>
+      </header>
+
+      <section aria-labelledby="radar-heading">
+        <h2 id="radar-heading">KING 5 radar animation</h2>
+        <nav class="link-row" data-testid="radar-distance">
+          <a href="https://cdn.tegna-media.com/king/weather/K5-340mileAnim-640x480.gif">340 mile</a>
+          <a href="https://cdn.tegna-media.com/king/weather/K5-120mileAnim-640x480.gif">120 mile</a>
+          <a href="https://cdn.tegna-media.com/king/weather/K5-60mileAnim-640x480.gif">60 mile</a>
+        </nav>
+        <nav class="link-row" data-testid="radar-regional">
+          <a href="https://cdn.tegna-media.com/king/weather/aberdeen_radarAnim-640x480.gif">Aberdeen</a>
+          <a href="https://cdn.tegna-media.com/king/weather/bellingham_radarAnim-640x480.gif">Bellingham</a>
+          <a href="https://cdn.tegna-media.com/king/weather/centralia_radarAnim-640x480.gif">Centralia</a>
+        </nav>
+      </section>
+
+      <section aria-labelledby="forecasts-heading">
+        <h2 id="forecasts-heading">NOAA forecasts</h2>
+        <ul class="forecast-list">
+          <li>
+            <a href="https://aviationweather.gov/gfa/">
+              Graphical Forecast for Aviation (GFA)
+            </a>
+          </li>
+          <li>
+            <a href="https://forecast.weather.gov/product.php?site=NWS&amp;issuedby=SEW&amp;product=AFD&amp;format=CI&amp;version=1&amp;glossary=0">
+              Seattle Area Forecast Discussion (AFD)
+            </a>
+          </li>
+        </ul>
+      </section>
+
+      <section aria-labelledby="metar-heading">
+        <h2 id="metar-heading">METAR / TAF lookup</h2>
+        <form
+          id="metar-form"
+          name="icao"
+          method="GET"
+          action="https://aviationweather.gov/data/metar/"
+        >
+          <label for="ids">ICAO codes (comma-separated)</label>
+          <div class="ids-row">
+            <input
+              id="ids"
+              name="ids"
+              type="text"
+              value="KPAE,KBFI,KRNT,KPWT,KOLM,KHQM"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <button
+              id="manage-toggle"
+              type="button"
+              class="manage-toggle"
+              aria-controls="manage-panel"
+              aria-expanded="false"
+            >
+              Manage <span class="icao-count" id="icao-count" aria-live="polite"></span>
+            </button>
+          </div>
+
+          <section id="manage-panel" class="manage-panel" hidden aria-label="Manage ICAO list">
+            <div class="manage-search" role="search">
+              <label for="icao-search" class="visually-hidden">Search airports</label>
+              <input
+                id="icao-search"
+                type="search"
+                autocomplete="off"
+                placeholder="Search by ICAO, IATA, city, or airport name…"
+                aria-describedby="icao-search-status"
+              />
+              <button
+                id="icao-search-external"
+                type="button"
+                class="icao-search-external"
+                disabled
+                title="Online search not yet wired (PHP proxy pending)"
+                aria-label="Search online (not yet wired)"
+              >Online ↗</button>
+            </div>
+            <p id="icao-search-status" class="icao-search-status" aria-live="polite"></p>
+            <ul id="icao-search-results" class="icao-search-results" hidden></ul>
+
+            <ol id="icao-presets" class="icao-grid" role="list" aria-label="ICAO list"></ol>
+
+            <div id="icao-actions" class="icao-actions">
+              <button type="button" data-action="select-defaults">Restore defaults</button>
+              <button type="button" data-action="select-all">All</button>
+              <button type="button" data-action="select-none">None</button>
+            </div>
+            <p class="icao-hint">
+              Up to 20 airports per list. Reorder with ↑/↓ buttons or drag. Selections persist in your browser only.
+            </p>
+          </section>
+
+          <div class="form-controls">
+            <div class="ctrl-group" role="radiogroup" aria-label="Format">
+              <label><input type="radio" name="decoded" value="0" checked /> Raw</label>
+              <label><input type="radio" name="decoded" value="1" /> Translated</label>
+            </div>
+            <label class="ctrl-group">
+              Hours
+              <select name="hours">
+                <option selected>0</option>
+                <option>1</option>
+                <option>2</option>
+                <option>3</option>
+                <option>4</option>
+                <option>5</option>
+                <option>6</option>
+                <option>12</option>
+                <option>18</option>
+                <option>24</option>
+                <option>36</option>
+              </select>
+            </label>
+            <div class="ctrl-group actions">
+              <button type="submit" name="taf" value="0">METAR</button>
+              <button type="submit" name="taf" value="1">METAR + TAF</button>
+              <button type="reset">Reset</button>
+            </div>
+          </div>
+
+          <p id="form-error" class="error" role="alert" hidden></p>
+        </form>
+      </section>
+
+      <footer>
+        <p>Data: <a href="https://aviationweather.gov/">aviationweather.gov</a>, <a href="https://www.weather.gov/">NOAA NWS</a>, KING 5.</p>
+      </footer>
+    </main>
+
+    <script type="module" src="./js/main.js"></script>
+  </body>
+</html>

@@ -1,0 +1,15 @@
+# Copy to terraform.tfvars (gitignored) and fill in real values.
+# Or, instead of a tfvars file, export TF_VAR_* env vars in your shell.
+
+github_owner = "YOUR_GITHUB_USERNAME"
+repo_name    = "qmtweb"
+
+sftp_host        = "serverNN.accuwebhosting.com"
+sftp_port        = "22"
+sftp_username    = "YOUR_CPANEL_USER"
+sftp_private_key = <<-EOT
+-----BEGIN OPENSSH PRIVATE KEY-----
+...paste private key here, or load from a file via Terraform...
+-----END OPENSSH PRIVATE KEY-----
+EOT
+sftp_remote_path = "/home/YOUR_CPANEL_USER/public_html"

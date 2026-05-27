@@ -1,0 +1,26 @@
+{
+  "name": "qmtweb",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Quick METAR and TAF plus weather links — static site for pailthorp.net",
+  "type": "module",
+  "scripts": {
+    "dev": "http-server site -p 8080 -c-1 --silent",
+    "start": "http-server site -p 8080 -c-1",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "test:e2e:install": "playwright install --with-deps chromium",
+    "lint": "eslint site/js tests",
+    "tf:fmt": "./scripts/terraform.sh fmt -check -recursive",
+    "tf:validate": "./scripts/validate-tf.sh",
+    "tf:lint": "./scripts/tflint.sh"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.0",
+    "eslint": "^9.16.0",
+    "globals": "^15.13.0",
+    "http-server": "^14.1.1",
+    "vitest": "^2.1.8"
+  }
+}
