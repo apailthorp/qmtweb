@@ -9,6 +9,8 @@
 # This revalidation is what busts the whole unbundled ES-module graph (deep
 # imports included) on each release — the single site version (shown in the
 # bottom-right tag) is the human-facing/traceable marker, not the cache key.
+#
+# Full design + troubleshooting: docs/VERSIONING.md
 <IfModule mod_headers.c>
   <FilesMatch "\.(html|css|js|mjs)$">
     Header always set Cache-Control "no-cache, must-revalidate"

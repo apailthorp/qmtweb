@@ -10,6 +10,8 @@
 // "dev" instead. Cache freshness is handled by the server (site/.htaccess sends
 // no-cache/must-revalidate on markup + code), so there's nothing to force here —
 // we just surface and record the version.
+//
+// Full design + troubleshooting: docs/VERSIONING.md
 
 const PLACEHOLDER = "__APP_VERSION__";
 export const VERSION_STORE_KEY = "qmtweb.appVersion";

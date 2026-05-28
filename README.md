@@ -33,6 +33,7 @@ for the persistence behavior and the test/CI/deploy pipeline.
 ├── tests/
 │   ├── unit/                   # Vitest
 │   └── e2e/                    # Playwright (Chromium)
+├── docs/                       # VERSIONING.md (versioning + cache strategy)
 ├── infra/                      # Terraform (GitHub repo + Actions secrets)
 ├── scripts/                    # Docker wrappers (terraform/tflint/validate-tf) + stamp-version.mjs
 ├── .github/workflows/          # ci.yml, deploy.yml
@@ -138,6 +139,10 @@ Deploy is **FTPS** (explicit TLS on port 21) via `SamKirkland/FTP-Deploy-Action`
 To bootstrap once: create the FTP account in cPanel → FTP Accounts (rooted at `public_html`), fill `infra/terraform.tfvars`, then run Terraform — that publishes the four secrets to the repo and the next push to `main` will deploy.
 
 ## Versioning & releases
+
+> **Full design, extension points, and troubleshooting:**
+> [`docs/VERSIONING.md`](docs/VERSIONING.md). The summary below is the
+> quickstart.
 
 The site carries a single whole-site version, shown in tiny text pinned to the
 bottom-right of the viewport (it auto-hides if it would overlap the footer). It

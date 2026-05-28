@@ -12,6 +12,8 @@
 //
 // The semver part bumps by hand in package.json (per release); the SHA part is
 // automatic and changes every deploy, so the combined version is always unique.
+//
+// Full design + troubleshooting: docs/VERSIONING.md
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { execSync } from "node:child_process";
