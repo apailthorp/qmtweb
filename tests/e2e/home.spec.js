@@ -13,6 +13,15 @@ test.describe("pailthorp.net home page", () => {
     await expect(page.locator(".tagline")).toContainText(/METAR/i);
   });
 
+  test("shows the version stamp (pinned bottom-right, 'dev' when unstamped)", async ({ page }) => {
+    const stamp = page.locator("#app-version");
+    // version.js replaces the unstamped __APP_VERSION__ token with "dev" locally.
+    await expect(stamp).toHaveText("dev");
+    await expect(stamp).toBeVisible(); // short page → no footer collision
+    const position = await stamp.evaluate((el) => getComputedStyle(el).position);
+    expect(position).toBe("fixed");
+  });
+
   test("KING 5 radar grid has all 16 links pointing at the tegna-media CDN", async ({ page }) => {
     const radarLinks = page.locator("[data-testid='radar-grid'] a");
     await expect(radarLinks).toHaveCount(16);

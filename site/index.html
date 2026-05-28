@@ -1,10 +1,11 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-version="__APP_VERSION__">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>pailthorp.net — Quick METAR &amp; TAF</title>
     <meta name="description" content="Quick METAR and TAF plus weather links for the Pacific Northwest." />
+    <meta name="app-version" content="__APP_VERSION__" />
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
@@ -171,6 +172,8 @@
         <p>Data: <a href="https://aviationweather.gov/">aviationweather.gov</a>, <a href="https://www.weather.gov/">NOAA NWS</a>, <a href="https://www.king5.com/radar">KING 5</a>.</p>
       </footer>
     </main>
+
+    <div id="app-version" class="app-version">__APP_VERSION__</div>
 
     <script type="module" src="./js/main.js"></script>
   </body>

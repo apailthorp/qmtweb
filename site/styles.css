@@ -594,3 +594,28 @@ footer {
     padding: 1rem 0.75rem 2rem;
   }
 }
+
+/* Whole-site version stamp — pinned to the bottom-right of the viewport in
+ * very small text. Populated by js/version.js, which also hides it (via
+ * .is-hidden) whenever it would overlap the footer, so it never covers
+ * content. pointer-events:none keeps it from intercepting clicks. */
+.app-version {
+  position: fixed;
+  right: 0.4rem;
+  bottom: 0.25rem;
+  z-index: 10;
+  padding: 1px 4px;
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--fg-muted);
+  background: rgba(250, 250, 250, 0.85);
+  border-radius: var(--radius);
+  letter-spacing: 0.02em;
+  pointer-events: none;
+  user-select: none;
+  transition: opacity 0.15s ease;
+}
+
+.app-version.is-hidden {
+  opacity: 0;
+}
