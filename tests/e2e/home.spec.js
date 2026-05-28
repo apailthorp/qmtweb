@@ -13,13 +13,15 @@ test.describe("pailthorp.net home page", () => {
     await expect(page.locator(".tagline")).toContainText(/METAR/i);
   });
 
-  test("KING 5 radar links point at tegna-media CDN", async ({ page }) => {
-    const radarLinks = page.locator("[data-testid='radar-distance'] a, [data-testid='radar-regional'] a");
-    await expect(radarLinks).toHaveCount(6);
+  test("KING 5 radar grid has all 16 links pointing at the tegna-media CDN", async ({ page }) => {
+    const radarLinks = page.locator("[data-testid='radar-grid'] a");
+    await expect(radarLinks).toHaveCount(16);
     const hrefs = await radarLinks.evaluateAll((els) => els.map((a) => a.href));
     for (const href of hrefs) {
-      expect(href).toMatch(/^https:\/\/cdn\.tegna-media\.com\/king\/weather\//);
+      expect(href).toMatch(/^https:\/\/cdn\.tegna-media\.com\/king\/weather\/.+Anim-640x480\.gif$/);
     }
+    // All 16 are distinct.
+    expect(new Set(hrefs).size).toBe(16);
   });
 
   test("NOAA forecast links point at current (non-retired) endpoints", async ({ page }) => {
