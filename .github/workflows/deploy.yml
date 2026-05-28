@@ -39,13 +39,20 @@ jobs:
       - name: E2E tests
         run: npm run test:e2e
 
-      - name: Deploy to AccuWeb via SFTP
-        uses: wlixcc/SFTP-Deploy-Action@v1.2.4
+      - name: Deploy to AccuWeb via FTPS
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
         with:
-          server: ${{ secrets.SFTP_HOST }}
-          port: ${{ secrets.SFTP_PORT || 22 }}
-          username: ${{ secrets.SFTP_USERNAME }}
-          ssh_private_key: ${{ secrets.SFTP_PRIVATE_KEY }}
-          local_path: "./site/*"
-          remote_path: ${{ secrets.SFTP_REMOTE_PATH }}
-          delete_remote_files: false
+          server: ${{ secrets.FTP_HOST }}
+          username: ${{ secrets.FTP_USERNAME }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          protocol: ftps
+          port: 21
+          # The deploy FTP account is rooted at public_html, so server-dir
+          # is "./" by default; override with FTP_REMOTE_DIR if it isn't.
+          local-dir: ./site/
+          server-dir: ${{ secrets.FTP_REMOTE_DIR || './' }}
+          # Exclude repo/CI cruft and the diff-state file from uploads.
+          exclude: |
+            **/.git*
+            **/.git*/**
+            **/.DS_Store

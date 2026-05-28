@@ -4,12 +4,10 @@
 github_owner = "YOUR_GITHUB_USERNAME"
 repo_name    = "qmtweb"
 
-sftp_host        = "serverNN.accuwebhosting.com"
-sftp_port        = "22"
-sftp_username    = "YOUR_CPANEL_USER"
-sftp_private_key = <<-EOT
------BEGIN OPENSSH PRIVATE KEY-----
-...paste private key here, or load from a file via Terraform...
------END OPENSSH PRIVATE KEY-----
-EOT
-sftp_remote_path = "/home/YOUR_CPANEL_USER/public_html"
+# AccuWeb deploy FTP account (FTPS on port 21).
+ftp_host     = "ftp.pailthorp.net"
+ftp_username = "deploy@pailthorp.net"
+ftp_password = "PUT_THE_FTP_ACCOUNT_PASSWORD_HERE"
+# The deploy account is rooted at public_html, so "./" deploys to the
+# webroot. Set a subpath only if your FTP account is rooted elsewhere.
+ftp_remote_dir = "./"

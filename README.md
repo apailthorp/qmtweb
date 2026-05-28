@@ -95,7 +95,7 @@ What Terraform does **not** manage (no provider exists):
 ## Branching model
 
 ```
-feature/* ──PR──▶ development ──PR──▶ main ──▶ SFTP deploy to AccuWeb
+feature/* ──PR──▶ development ──PR──▶ main ──▶ FTPS deploy to AccuWeb
 ```
 
 - `development` is the **default branch** (new clones and PR targets land there).
@@ -108,13 +108,15 @@ feature/* ──PR──▶ development ──PR──▶ main ──▶ SFTP de
 | Workflow | Trigger | Does |
 |---|---|---|
 | `.github/workflows/ci.yml` | every PR + push to `main` or `development` | lint, Vitest, Playwright, `validate-tf.sh` |
-| `.github/workflows/deploy.yml` | push to `main` (and manual dispatch) | runs the same checks, then SFTPs `site/` to AccuWeb |
+| `.github/workflows/deploy.yml` | push to `main` (and manual dispatch) | runs the same checks, then FTPS-uploads `site/` to AccuWeb |
 
 The deploy uses these repo secrets (managed by Terraform in `infra/`):
 
-- `SFTP_HOST`, `SFTP_PORT` (optional, defaults to 22)
-- `SFTP_USERNAME`
-- `SFTP_PRIVATE_KEY` (PEM private key with passwordless SSH to the AccuWeb account)
-- `SFTP_REMOTE_PATH` (e.g. `/home/<cpaneluser>/public_html`)
+- `FTP_HOST` (e.g. `ftp.pailthorp.net`)
+- `FTP_USERNAME` (e.g. `deploy@pailthorp.net`)
+- `FTP_PASSWORD`
+- `FTP_REMOTE_DIR` (usually `./` — the deploy FTP account is rooted at `public_html`)
 
-To bootstrap once: get an SFTP-capable SSH key working against the AccuWeb account, then run Terraform — that publishes all five secrets to the repo and the next push to `main` will deploy.
+Deploy is **FTPS** (explicit TLS on port 21) via `SamKirkland/FTP-Deploy-Action`; AccuWeb shared hosting doesn't expose SSH, so a scoped cPanel FTP account is used instead.
+
+To bootstrap once: create the FTP account in cPanel → FTP Accounts (rooted at `public_html`), fill `infra/terraform.tfvars`, then run Terraform — that publishes the four secrets to the repo and the next push to `main` will deploy.

@@ -9,32 +9,26 @@ variable "repo_name" {
   default     = "qmtweb"
 }
 
-variable "sftp_host" {
-  description = "AccuWeb SFTP hostname (e.g. server NN.accuwebhosting.com)."
+variable "ftp_host" {
+  description = "AccuWeb FTP hostname, e.g. ftp.pailthorp.net (FTPS on port 21)."
   type        = string
   sensitive   = true
 }
 
-variable "sftp_port" {
-  description = "SFTP port. AccuWeb typically uses 22."
-  type        = string
-  default     = "22"
-}
-
-variable "sftp_username" {
-  description = "SFTP username (your AccuWeb / cPanel user)."
+variable "ftp_username" {
+  description = "FTP account username, e.g. deploy@pailthorp.net."
   type        = string
   sensitive   = true
 }
 
-variable "sftp_private_key" {
-  description = "PEM-encoded SSH private key authorized for SFTP_USERNAME on the AccuWeb host."
+variable "ftp_password" {
+  description = "Password for the deploy FTP account."
   type        = string
   sensitive   = true
 }
 
-variable "sftp_remote_path" {
-  description = "Webroot on AccuWeb to deploy into, e.g. /home/USER/public_html"
+variable "ftp_remote_dir" {
+  description = "Server dir to deploy into, relative to the FTP account root. The deploy account is rooted at public_html, so this is usually './'."
   type        = string
-  sensitive   = true
+  default     = "./"
 }

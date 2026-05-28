@@ -8,8 +8,9 @@ This Terraform config uses [`integrations/github`](https://registry.terraform.io
 to manage:
 
 - The `qmtweb` GitHub repository (settings, merge rules)
-- Branch protection on `main`
-- Actions secrets used by `.github/workflows/deploy.yml` for SFTP deploys
+- `development` as the default branch + branch protection on `main` and `development`
+- Actions secrets used by `.github/workflows/deploy.yml` for the FTPS deploy
+  (`FTP_HOST`, `FTP_USERNAME`, `FTP_PASSWORD`, `FTP_REMOTE_DIR`)
 
 **Not managed by Terraform** (no provider exists for these):
 
@@ -49,7 +50,9 @@ provider block.
    terraform apply
    ```
 
-## Rotating the SFTP key
+## Rotating the FTP password
 
-Update `sftp_private_key` in `terraform.tfvars` and `terraform apply`.
-The Actions secret is updated in place; the next deploy uses the new key.
+Update `ftp_password` in `terraform.tfvars` and `terraform apply`. The
+`FTP_PASSWORD` Actions secret is updated in place; the next deploy uses it.
+(AccuWeb has no Terraform provider, so the FTP account itself is created/rotated
+in cPanel → FTP Accounts.)

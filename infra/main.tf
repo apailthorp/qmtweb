@@ -86,33 +86,28 @@ resource "github_branch_protection" "development" {
 # --- Actions secrets used by .github/workflows/deploy.yml ---
 # Values are supplied via Terraform variables (typically loaded from a
 # gitignored terraform.tfvars). Never commit real secret values.
+# Deploy is FTPS (port 21) to the AccuWeb FTP account.
 
-resource "github_actions_secret" "sftp_host" {
+resource "github_actions_secret" "ftp_host" {
   repository      = github_repository.qmtweb.name
-  secret_name     = "SFTP_HOST"
-  plaintext_value = var.sftp_host
+  secret_name     = "FTP_HOST"
+  plaintext_value = var.ftp_host
 }
 
-resource "github_actions_secret" "sftp_port" {
+resource "github_actions_secret" "ftp_username" {
   repository      = github_repository.qmtweb.name
-  secret_name     = "SFTP_PORT"
-  plaintext_value = var.sftp_port
+  secret_name     = "FTP_USERNAME"
+  plaintext_value = var.ftp_username
 }
 
-resource "github_actions_secret" "sftp_username" {
+resource "github_actions_secret" "ftp_password" {
   repository      = github_repository.qmtweb.name
-  secret_name     = "SFTP_USERNAME"
-  plaintext_value = var.sftp_username
+  secret_name     = "FTP_PASSWORD"
+  plaintext_value = var.ftp_password
 }
 
-resource "github_actions_secret" "sftp_private_key" {
+resource "github_actions_secret" "ftp_remote_dir" {
   repository      = github_repository.qmtweb.name
-  secret_name     = "SFTP_PRIVATE_KEY"
-  plaintext_value = var.sftp_private_key
-}
-
-resource "github_actions_secret" "sftp_remote_path" {
-  repository      = github_repository.qmtweb.name
-  secret_name     = "SFTP_REMOTE_PATH"
-  plaintext_value = var.sftp_remote_path
+  secret_name     = "FTP_REMOTE_DIR"
+  plaintext_value = var.ftp_remote_dir
 }
