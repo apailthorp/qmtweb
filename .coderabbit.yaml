@@ -10,6 +10,12 @@ reviews:
   review_status: true
   collapse_walkthrough: false
 
+  # Per-function docstrings aren't a goal for this small front-end; the code
+  # uses file-level + inline comments. Turn off the docstring-coverage gate.
+  pre_merge_checks:
+    docstrings:
+      mode: "off"
+
   auto_review:
     enabled: true
     drafts: false

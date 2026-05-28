@@ -113,8 +113,8 @@ feature/* ──PR──▶ development ──PR──▶ main ──▶ FTPS de
 ```
 
 - `development` is the **default branch** (new clones and PR targets land there).
-- Feature work lives on `feature/*` or similar and merges into `development` via PR.
-- `development → main` is the **promotion** PR — merging it triggers the production deploy.
+- Feature work lives on `feature/*` (or `fix/*`) and merges into `development` via PR — **squash merge** (one tidy commit per feature).
+- `development → main` is the **promotion** PR — merging it triggers the production deploy. **Merge it with a "Create a merge commit", not squash.** Squashing the promotion gives `main` and `development` divergent histories (sharing only the root), which makes every later promotion PR diff the whole tree; a merge commit keeps them in lockstep so promotion PRs only show the new commits.
 - Both `main` and `development` are PR-gated with required status checks via Terraform-managed branch protection.
 
 ## CI / deploy

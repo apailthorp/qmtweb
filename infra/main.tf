@@ -23,7 +23,11 @@ resource "github_repository" "qmtweb" {
   has_wiki     = false
   has_projects = false
 
-  allow_merge_commit     = false
+  # Merge policy: squash feature PRs into development (tidy per-feature
+  # history); promote development -> main with a MERGE COMMIT so the two
+  # branches share history and promotion PRs only diff the new commits
+  # (squashing the promotion is what caused them to diverge from root).
+  allow_merge_commit     = true
   allow_squash_merge     = true
   allow_rebase_merge     = true
   delete_branch_on_merge = true
