@@ -1,0 +1,42 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: en-US
+early_access: false
+
+reviews:
+  profile: chill                  # less noisy; switch to "assertive" for deeper nits
+  request_changes_workflow: false # advisory only — branch protection gates on the `test` check
+  high_level_summary: true
+  poem: false
+  review_status: true
+  collapse_walkthrough: false
+
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - development
+      - main
+
+  # Skip generated / vendored / huge files.
+  path_filters:
+    - "!site/data/airports.json"   # generated OurAirports bundle (~1 MB)
+    - "!package-lock.json"
+
+  path_instructions:
+    - path: "site/js/**"
+      instructions: >-
+        Vanilla ES modules, no framework. Watch for DOM/JS state desync,
+        missing accessibility attributes, event-listener leaks, and
+        localStorage misuse. Pure helpers should stay DOM-free and testable.
+    - path: "tests/e2e/**"
+      instructions: >-
+        Playwright tests. Flag flakiness risks: hard waits, viewport
+        assumptions, or reliance on live network (except the intentional
+        external-links health spec).
+    - path: "infra/**"
+      instructions: >-
+        Terraform managing GitHub repo settings only. Flag hardcoded
+        secrets, overly broad token scopes, or destructive changes.
+
+chat:
+  auto_reply: true
