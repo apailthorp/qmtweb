@@ -7,7 +7,7 @@ README has the short version.
 ## TL;DR
 
 - The whole site has **one** version string: `v<semver> · <shortSHA>`
-  (e.g. `v1.0.0 · a1b2c3d`), shown in tiny text at the bottom-right of every
+  (e.g. `v1.0.0 · a1b2c3d`), shown in tiny text at the bottom-left of every
   page.
 - **You** bump the `semver` in `package.json` per release. The **short SHA** is
   added automatically at deploy.
@@ -25,8 +25,8 @@ README has the short version.
 | `package.json` → `version` | Semver source of truth (bumped by hand per release). |
 | `scripts/stamp-version.mjs` | At deploy, replaces the `__APP_VERSION__` token in `index.html` with `v<semver> · <shortSHA>`. Exposes pure helpers (`buildVersion`, `applyVersionToken`, `shortSha`) for tests. |
 | `site/index.html` | Carries the `__APP_VERSION__` token in three places: `<html data-version>`, `<meta name="app-version">`, and `<div id="app-version">`. |
-| `site/js/version.js` | Reads the stamped version, renders the tag, hides it on collision with the footer, and records it in `localStorage` to detect cross-session changes. Pure helpers are unit-tested. |
-| `site/styles.css` → `.app-version` | Styles the fixed bottom-right tag; `.is-hidden` fades it out. |
+| `site/js/version.js` | Reads the stamped version, renders the tag, hides it while you're scrolled up (when the fixed tag would float over content) and shows it at the bottom, and records it in `localStorage` to detect cross-session changes. Pure helpers are unit-tested. |
+| `site/styles.css` → `.app-version` | Styles the fixed bottom-left tag; `.is-hidden` fades it out. |
 | `site/.htaccess` | Cache policy — the **actual** freshness mechanism (revalidation). |
 | `.github/workflows/deploy.yml` | Runs the stamp step before upload, then cuts the git tag + GitHub Release. |
 | `tests/unit/version.test.js` | Unit tests for the version + stamp helpers. |
@@ -136,8 +136,8 @@ curl -s https://pailthorp.net/ | grep -o 'data-version="[^"]*"'
 gh release list --repo apailthorp/qmtweb
 ```
 
-On the page itself, the version tag is bottom-right; it disappears when scrolled
-so the footer reaches it (by design).
+On the page itself, the version tag is bottom-left; it rests at the bottom and
+disappears while you're scrolled up (so the fixed tag never floats over content).
 
 ## Troubleshooting
 
@@ -153,18 +153,21 @@ so the footer reaches it (by design).
 - **Tag shows the literal `__APP_VERSION__`.** The stamp step didn't run (e.g.
   deploying outside `deploy.yml`). Run `node scripts/stamp-version.mjs` against
   the file being shipped. Locally this is expected to read `dev`.
-- **Tag overlaps the footer / never hides.** `version.js` compares the tag's
-  rect with the `<footer>` rect on scroll/resize. If the footer selector
-  changes, update `initVersionTag`. `rectsOverlap` is unit-tested.
+- **Tag never hides / hides too eagerly.** `version.js` shows the tag only at
+  (or within `threshold` of) the bottom of a scrollable page and hides it while
+  scrolled up, where the fixed tag would otherwise float over content
+  (`shouldHide`, on scroll/resize/load). Tune the `threshold` (px) if needed;
+  it's unit-tested. (An earlier rect-overlap-with-footer check never fired,
+  because the tag sits in `main`'s bottom padding, below the footer.)
 - **No Release was created on deploy.** The tag already existed (no semver bump),
   or the workflow lacks `contents: write`. Both are in `deploy.yml`.
 
 ## Testing
 
 - **Unit** (`tests/unit/version.test.js`): `resolveVersion` (placeholder → `dev`),
-  `rectsOverlap` (collision geometry), `recordVersion` (cross-session + storage
-  failure), and the stamp helpers `buildVersion` / `applyVersionToken` /
-  `shortSha`.
-- **E2E** (`tests/e2e/home.spec.js`): the tag renders, is visible on a short
-  page, and is `position: fixed`. (E2E runs against unstamped source, so the tag
-  reads `dev`.)
+  `shouldHide` (show-at-bottom / hide-while-scrolled-up logic), `recordVersion`
+  (cross-session + storage failure), and the stamp helpers `buildVersion` /
+  `applyVersionToken` / `shortSha`.
+- **E2E** (`tests/e2e/home.spec.js`): the tag renders with the expected text and
+  is `position: fixed`. (E2E runs against unstamped source, so the tag reads
+  `dev`.)

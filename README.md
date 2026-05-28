@@ -145,7 +145,8 @@ To bootstrap once: create the FTP account in cPanel → FTP Accounts (rooted at 
 > quickstart.
 
 The site carries a single whole-site version, shown in tiny text pinned to the
-bottom-right of the viewport (it auto-hides if it would overlap the footer). It
+bottom-left of the viewport. It rests at the bottom of the page and auto-hides
+while you're scrolled up, so the fixed tag never floats over content. It
 combines the **semver** from `package.json` with the **short commit SHA** —
 e.g. `v1.0.0 · a1b2c3d`:
 

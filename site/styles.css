@@ -595,13 +595,16 @@ footer {
   }
 }
 
-/* Whole-site version stamp — pinned to the bottom-right of the viewport in
- * very small text. Populated by js/version.js, which also hides it (via
- * .is-hidden) whenever it would overlap the footer, so it never covers
- * content. pointer-events:none keeps it from intercepting clicks. */
+/* Whole-site version stamp — pinned to the bottom-left of the viewport in
+ * very small text. Populated by js/version.js, which also toggles .is-hidden:
+ * applied while the page is scrolled away from the bottom (where the fixed tag
+ * would float over content), removed when scrolled to the bottom of a
+ * scrollable page (or when the page is too short to scroll) so the stamp shows
+ * at its home by the footer. pointer-events:none keeps it from intercepting
+ * clicks. */
 .app-version {
   position: fixed;
-  right: 0.4rem;
+  left: 0.5rem;
   bottom: 0.25rem;
   z-index: 10;
   padding: 1px 4px;

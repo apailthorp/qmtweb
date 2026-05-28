@@ -107,5 +107,5 @@ form?.addEventListener("submit", (event) => {
 
 idsInput?.addEventListener("input", clearError);
 
-// Show the deployed version stamp (bottom-right, hides on collision).
+// Show the deployed version stamp (bottom-left; hides while scrolled up).
 initVersionTag();
