@@ -25,9 +25,11 @@ provider block.
 
 ## Bootstrap
 
-1. Create a GitHub personal access token (classic, scope: `repo`,
-   `admin:repo_hook`, `delete_repo` if you ever want to destroy).
-   Export it:
+1. Create a GitHub personal access token (classic) with scopes **`repo`**
+   and **`read:org`**. `read:org` is required because branch protection is
+   created via GitHub's GraphQL API (a `repo`-only token errors with
+   "requires one of: read:org, read:discussion"). Add `delete_repo` only if
+   you ever want to `terraform destroy`. Export it:
 
    ```sh
    export GITHUB_TOKEN=ghp_...
