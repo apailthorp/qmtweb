@@ -26,7 +26,7 @@ README has the short version.
 | `scripts/stamp-version.mjs` | At deploy, replaces the `__APP_VERSION__` token in `index.html` with `v<semver> · <shortSHA>`. Exposes pure helpers (`buildVersion`, `applyVersionToken`, `shortSha`) for tests. |
 | `site/index.html` | Carries the `__APP_VERSION__` token in three places: `<html data-version>`, `<meta name="app-version">`, and `<div id="app-version">`. |
 | `site/js/version.js` | Reads the stamped version, renders the tag, hides it while you're scrolled up (when the fixed tag would float over content) and shows it at the bottom, and records it in `localStorage` to detect cross-session changes. Pure helpers are unit-tested. |
-| `site/styles.css` → `.app-version` | Styles the fixed bottom-right tag; `.is-hidden` fades it out. |
+| `site/styles.css` → `.app-version` | Styles the fixed bottom-left tag; `.is-hidden` fades it out. |
 | `site/.htaccess` | Cache policy — the **actual** freshness mechanism (revalidation). |
 | `.github/workflows/deploy.yml` | Runs the stamp step before upload, then cuts the git tag + GitHub Release. |
 | `tests/unit/version.test.js` | Unit tests for the version + stamp helpers. |
