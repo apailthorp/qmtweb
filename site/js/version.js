@@ -1,9 +1,12 @@
 // Whole-site version tag.
 //
 // Shows the deployed version (semver + short build SHA, e.g. "v1.0.0 · a1b2c3d")
-// pinned to the bottom-right of the viewport, in very small text. It hides
-// itself whenever it would overlap the footer, so it never sits on top of real
-// content.
+// pinned to the bottom-left of the viewport, in very small text. Its home is the
+// bottom of the page, resting just below the footer over empty margin. Because
+// it's position:fixed, scrolling UP from the bottom makes it float over page
+// content — a collision — so it hides while you're scrolled away from the
+// bottom, and shows only when you're at the bottom (or the page is too short to
+// scroll, in which case there's nothing to collide with).
 //
 // The version string is stamped into <html data-version="…"> at deploy time by
 // scripts/stamp-version.mjs. In local dev the token is left intact, so we show
@@ -24,14 +27,16 @@ export function resolveVersion(raw) {
   return value;
 }
 
-// Axis-aligned overlap test for two DOMRect-like objects.
-export function rectsOverlap(a, b) {
-  return !(
-    a.right <= b.left ||
-    a.left >= b.right ||
-    a.bottom <= b.top ||
-    a.top >= b.bottom
-  );
+// Decide whether to hide the tag. The tag's home is the bottom of the page; it's
+// position:fixed, so while you're scrolled UP from the bottom it floats over page
+// content — a collision — and should hide. It shows only when you're at (or
+// within `threshold` of) the bottom. A short, non-scrollable page has nothing to
+// collide with, so the tag always shows. Position-agnostic: works at either edge.
+export function shouldHide({ scrollHeight, viewportHeight, scrollY, threshold = 8 }) {
+  const scrollable = scrollHeight > viewportHeight + threshold;
+  if (!scrollable) return false; // nothing to scroll over → never a collision
+  const atBottom = scrollY + viewportHeight >= scrollHeight - threshold;
+  return !atBottom; // hide while scrolled up (floating over content)
 }
 
 // Record the version seen this load and report whether it changed since a
@@ -70,16 +75,18 @@ export function initVersionTag(doc = document) {
   // already fresh via server revalidation, so we only need to record it.
   if (version !== "dev") recordVersion(version, safeLocalStorage());
 
-  const obstacle = doc.querySelector("footer") ?? doc.querySelector("main");
-
   const update = () => {
-    if (!obstacle) return;
-    const tag = el.getBoundingClientRect();
-    const rect = obstacle.getBoundingClientRect();
-    // Toggle opacity (not display) so the tag keeps its layout box and its
-    // rect stays measurable — otherwise hiding would zero the rect and we'd
-    // immediately re-show, causing a flicker loop.
-    el.classList.toggle("is-hidden", rectsOverlap(tag, rect));
+    const root = doc.documentElement;
+    // Toggle opacity (not display) so the tag keeps its layout box — hiding via
+    // display would zero its rect and could fight future measurements.
+    el.classList.toggle(
+      "is-hidden",
+      shouldHide({
+        scrollHeight: root.scrollHeight,
+        viewportHeight: window.innerHeight,
+        scrollY: window.scrollY,
+      }),
+    );
   };
 
   let ticking = false;
@@ -94,5 +101,8 @@ export function initVersionTag(doc = document) {
 
   window.addEventListener("scroll", schedule, { passive: true });
   window.addEventListener("resize", schedule);
+  // `load` also covers the browser restoring a saved scroll position after a
+  // reload, which can happen after this module's initial pass.
+  window.addEventListener("load", schedule);
   schedule(); // initial pass once layout has settled
 }

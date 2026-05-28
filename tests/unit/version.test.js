@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   resolveVersion,
-  rectsOverlap,
+  shouldHide,
   recordVersion,
   VERSION_STORE_KEY,
 } from "../../site/js/version.js";
@@ -32,24 +32,30 @@ describe("resolveVersion", () => {
   });
 });
 
-describe("rectsOverlap", () => {
-  const r = (left, top, right, bottom) => ({ left, top, right, bottom });
-
-  it("detects overlapping rectangles", () => {
-    expect(rectsOverlap(r(0, 0, 10, 10), r(5, 5, 15, 15))).toBe(true);
+describe("shouldHide", () => {
+  it("never hides on a short, non-scrollable page (nothing to collide with)", () => {
+    expect(shouldHide({ scrollHeight: 600, viewportHeight: 800, scrollY: 0 })).toBe(false);
   });
 
-  it("returns false when separated vertically (tag above footer)", () => {
-    expect(rectsOverlap(r(0, 0, 10, 10), r(0, 20, 10, 30))).toBe(false);
+  it("treats a page only marginally taller than the viewport as non-scrollable", () => {
+    // within the default threshold (8px)
+    expect(shouldHide({ scrollHeight: 805, viewportHeight: 800, scrollY: 0 })).toBe(false);
   });
 
-  it("returns false when separated horizontally", () => {
-    expect(rectsOverlap(r(0, 0, 10, 10), r(20, 0, 30, 10))).toBe(false);
+  it("hides while scrolled up from the bottom (tag floats over content)", () => {
+    expect(shouldHide({ scrollHeight: 1600, viewportHeight: 800, scrollY: 0 })).toBe(true);
+    expect(shouldHide({ scrollHeight: 1600, viewportHeight: 800, scrollY: 400 })).toBe(true);
   });
 
-  it("treats edges that merely touch as non-overlapping", () => {
-    expect(rectsOverlap(r(0, 0, 10, 10), r(10, 0, 20, 10))).toBe(false);
-    expect(rectsOverlap(r(0, 0, 10, 10), r(0, 10, 10, 20))).toBe(false);
+  it("shows once scrolled to (or within threshold of) the bottom — its home", () => {
+    // max scroll = 1600 - 800 = 800
+    expect(shouldHide({ scrollHeight: 1600, viewportHeight: 800, scrollY: 800 })).toBe(false);
+    expect(shouldHide({ scrollHeight: 1600, viewportHeight: 800, scrollY: 793 })).toBe(false); // within 8px
+    expect(shouldHide({ scrollHeight: 1600, viewportHeight: 800, scrollY: 790 })).toBe(true); // 10px shy → still hidden
+  });
+
+  it("honours a custom threshold", () => {
+    expect(shouldHide({ scrollHeight: 1600, viewportHeight: 800, scrollY: 760, threshold: 50 })).toBe(false);
   });
 });
 
