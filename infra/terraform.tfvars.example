@@ -1,0 +1,13 @@
+# Copy to terraform.tfvars (gitignored) and fill in real values.
+# Or, instead of a tfvars file, export TF_VAR_* env vars in your shell.
+
+github_owner = "YOUR_GITHUB_USERNAME"
+repo_name    = "qmtweb"
+
+# AccuWeb deploy FTP account (FTPS on port 21).
+ftp_host     = "ftp.pailthorp.net"
+ftp_username = "deploy@pailthorp.net"
+ftp_password = "PUT_THE_FTP_ACCOUNT_PASSWORD_HERE"
+# The deploy account is rooted at public_html, so "./" deploys to the
+# webroot. Set a subpath only if your FTP account is rooted elsewhere.
+ftp_remote_dir = "./"
