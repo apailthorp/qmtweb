@@ -51,10 +51,10 @@ describe("searchAirports", () => {
     expect(searchAirports("SEATTLE", FIXTURE)[0].icao).toBe("KSEA");
   });
 
-  it("respects the limit option", () => {
-    const r = searchAirports("a", FIXTURE, { limit: 2 });
-    // "a" is too short (under 2 chars), but check the limit branch.
-    expect(r.length).toBeLessThanOrEqual(2);
+  it("caps results at the limit when more match", () => {
+    // "airport" matches every fixture name; limit must actually trim it.
+    const r = searchAirports("airport", FIXTURE, { limit: 2 });
+    expect(r).toHaveLength(2);
   });
 
   it("returns at most `limit` results", () => {
@@ -87,6 +87,20 @@ describe("loadAirports", () => {
   it("throws on non-ok HTTP", async () => {
     const fakeFetch = async () => ({ ok: false, status: 503, json: async () => null });
     await expect(loadAirports(fakeFetch)).rejects.toThrow(/503/);
+  });
+
+  it("retries after a failed load instead of caching the rejection", async () => {
+    let calls = 0;
+    const fakeFetch = async () => {
+      calls++;
+      if (calls === 1) throw new Error("network down");
+      return { ok: true, json: async () => FIXTURE };
+    };
+    await expect(loadAirports(fakeFetch)).rejects.toThrow(/network down/);
+    // Second call should re-attempt (pending was cleared), not re-throw.
+    const result = await loadAirports(fakeFetch);
+    expect(result).toBe(FIXTURE);
+    expect(calls).toBe(2);
   });
 
   it("_setCache allows tests to preload", async () => {

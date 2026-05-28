@@ -111,9 +111,11 @@ export function initIcaoControl({
     cb.checked = selected.includes(icao);
 
     const textEl = document.createElement("span");
+    const strong = document.createElement("strong");
+    strong.textContent = icao;
+    textEl.append(strong);
     const name = describeIcao(icao, lookupByIcao);
-    const nameHtml = name ? ` — ${name}` : "";
-    textEl.innerHTML = `<strong>${icao}</strong>${nameHtml}`;
+    if (name) textEl.append(` — ${name}`); // text node — no HTML parsing
 
     labelEl.append(cb, textEl);
     row.append(labelEl);
@@ -435,11 +437,30 @@ export function initIcaoControl({
       btn.dataset.addIcao = a.icao;
       const inList = list.includes(a.icao);
       btn.disabled = inList || full;
-      btn.innerHTML = `
-        <span class="icao-result-code"><strong>${a.icao}</strong>${a.iata ? ` <em>${a.iata}</em>` : ""}</span>
-        <span class="icao-result-name">${a.name}${a.city ? `, ${a.city}` : ""}${a.country ? ` (${a.country})` : ""}</span>
-        <span class="icao-result-hint">${inList ? "in list" : full ? "list full" : "add"}</span>
-      `;
+
+      // Build with text nodes rather than innerHTML — airport names come
+      // from the bundled (third-party) dataset; keep them out of an HTML sink.
+      const codeSpan = document.createElement("span");
+      codeSpan.className = "icao-result-code";
+      const codeStrong = document.createElement("strong");
+      codeStrong.textContent = a.icao;
+      codeSpan.append(codeStrong);
+      if (a.iata) {
+        const em = document.createElement("em");
+        em.textContent = a.iata;
+        codeSpan.append(" ", em);
+      }
+
+      const nameSpan = document.createElement("span");
+      nameSpan.className = "icao-result-name";
+      nameSpan.textContent =
+        `${a.name}${a.city ? `, ${a.city}` : ""}${a.country ? ` (${a.country})` : ""}`;
+
+      const hintSpan = document.createElement("span");
+      hintSpan.className = "icao-result-hint";
+      hintSpan.textContent = inList ? "in list" : full ? "list full" : "add";
+
+      btn.append(codeSpan, nameSpan, hintSpan);
       item.append(btn);
       searchResults.append(item);
     }

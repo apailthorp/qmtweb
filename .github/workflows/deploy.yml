@@ -9,15 +9,23 @@ concurrency:
   group: deploy-production
   cancel-in-progress: false
 
+# Deploy uses FTP secrets, not the GITHUB_TOKEN — keep the token read-only.
+permissions:
+  contents: read
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # Only ever deploy main — guards manual workflow_dispatch from other refs.
+    if: github.ref == 'refs/heads/main'
     environment:
       name: production
       url: https://pailthorp.net
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@v4
         with:
@@ -40,7 +48,8 @@ jobs:
         run: npm run test:e2e
 
       - name: Deploy to AccuWeb via FTPS
-        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+        # Pinned to an immutable SHA (3rd-party action handling deploy creds).
+        uses: SamKirkland/FTP-Deploy-Action@8e83cea8672e3fbcbb9fdafff34debf6ae4c5f65 # v4.3.5
         with:
           server: ${{ secrets.FTP_HOST }}
           username: ${{ secrets.FTP_USERNAME }}

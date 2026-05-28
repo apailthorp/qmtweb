@@ -11,12 +11,19 @@ export async function loadAirports(fetcher = globalThis.fetch) {
   if (cache) return cache;
   if (pending) return pending;
   pending = (async () => {
-    const res = await fetcher(DATA_URL);
-    if (!res.ok) throw new Error(`airports.json: HTTP ${res.status}`);
-    const data = await res.json();
-    if (!Array.isArray(data)) throw new Error("airports.json: expected array");
-    cache = data;
-    return data;
+    try {
+      const res = await fetcher(DATA_URL);
+      if (!res.ok) throw new Error(`airports.json: HTTP ${res.status}`);
+      const data = await res.json();
+      if (!Array.isArray(data)) throw new Error("airports.json: expected array");
+      cache = data;
+      return data;
+    } catch (err) {
+      // Clear pending so a transient failure can be retried on the next call
+      // instead of returning the same rejected promise forever.
+      pending = null;
+      throw err;
+    }
   })();
   return pending;
 }

@@ -6,7 +6,7 @@ A deliberately simple static site (modeled on the existing pailthorp.net page) w
 
 ## Layout
 
-```
+```text
 .
 ├── site/                       # Deployed as-is (the document root)
 │   ├── index.html
@@ -94,7 +94,7 @@ What Terraform does **not** manage (no provider exists):
 
 ## Branching model
 
-```
+```text
 feature/* ──PR──▶ development ──PR──▶ main ──▶ FTPS deploy to AccuWeb
 ```
 
