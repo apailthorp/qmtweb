@@ -18,10 +18,14 @@
     Header always unset Pragma
   </FilesMatch>
 
-  # The lazy-loaded airport dataset is ~1 MB and changes rarely; let it be
-  # cached but still revalidated so a regenerated bundle propagates.
+  # The lazy-loaded airport dataset is ~1 MB, fetched once per session (then
+  # held in-memory by search.js) and regenerated only occasionally. A short
+  # TTL lets repeat visits skip the revalidation round-trip while a regenerated
+  # bundle still propagates within a day. A long max-age + immutable would be
+  # better, but only once the data URL is cache-busted (hashed name / version
+  # query) — it's currently served from a stable URL, so that isn't safe yet.
   <FilesMatch "airports\.json$">
-    Header always set Cache-Control "no-cache, must-revalidate"
+    Header always set Cache-Control "public, max-age=86400, must-revalidate"
     Header always unset Expires
   </FilesMatch>
 </IfModule>

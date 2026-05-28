@@ -17,7 +17,9 @@ test.describe("pailthorp.net home page", () => {
     const stamp = page.locator("#app-version");
     // version.js replaces the unstamped __APP_VERSION__ token with "dev" locally.
     await expect(stamp).toHaveText("dev");
-    await expect(stamp).toBeVisible(); // short page → no footer collision
+    // Both checks are viewport-independent. We deliberately don't assert
+    // toBeVisible(): the badge auto-hides via opacity (not display/visibility),
+    // so that depends on footer-collision layout and wouldn't be meaningful here.
     const position = await stamp.evaluate((el) => getComputedStyle(el).position);
     expect(position).toBe("fixed");
   });
