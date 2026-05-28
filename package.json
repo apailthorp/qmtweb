@@ -1,6 +1,6 @@
 {
   "name": "qmtweb",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "description": "Quick METAR and TAF plus weather links — static site for pailthorp.net",
   "type": "module",

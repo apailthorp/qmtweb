@@ -594,3 +594,31 @@ footer {
     padding: 1rem 0.75rem 2rem;
   }
 }
+
+/* Whole-site version stamp — pinned to the bottom-left of the viewport in
+ * very small text. Populated by js/version.js, which also toggles .is-hidden:
+ * applied while the page is scrolled away from the bottom (where the fixed tag
+ * would float over content), removed when scrolled to the bottom of a
+ * scrollable page (or when the page is too short to scroll) so the stamp shows
+ * at its home by the footer. pointer-events:none keeps it from intercepting
+ * clicks. */
+.app-version {
+  position: fixed;
+  left: 0.5rem;
+  bottom: 0.25rem;
+  z-index: 10;
+  padding: 1px 4px;
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--fg-muted);
+  background: rgba(250, 250, 250, 0.85);
+  border-radius: var(--radius);
+  letter-spacing: 0.02em;
+  pointer-events: none;
+  user-select: none;
+  transition: opacity 0.15s ease;
+}
+
+.app-version.is-hidden {
+  opacity: 0;
+}

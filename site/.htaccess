@@ -1,0 +1,31 @@
+# Cache policy for AccuWeb's LiteSpeed server (Apache-compatible .htaccess).
+#
+# By default the host sends a 7-day, non-revalidating cache on static assets
+# (Cache-Control: public, max-age=604800), which hides a deploy from returning
+# visitors for up to a week. Force revalidation on markup + code so every
+# deploy is picked up immediately. Last-Modified makes this cheap: unchanged
+# files return 304 (no body), changed files return a fresh 200.
+#
+# This revalidation is what busts the whole unbundled ES-module graph (deep
+# imports included) on each release — the single site version (shown in the
+# bottom-left tag) is the human-facing/traceable marker, not the cache key.
+#
+# Full design + troubleshooting: docs/VERSIONING.md
+<IfModule mod_headers.c>
+  <FilesMatch "\.(html|css|js|mjs)$">
+    Header always set Cache-Control "no-cache, must-revalidate"
+    Header always unset Expires
+    Header always unset Pragma
+  </FilesMatch>
+
+  # The lazy-loaded airport dataset is ~1 MB, fetched once per session (then
+  # held in-memory by search.js) and regenerated only occasionally. A short
+  # TTL lets repeat visits skip the revalidation round-trip while a regenerated
+  # bundle still propagates within a day. A long max-age + immutable would be
+  # better, but only once the data URL is cache-busted (hashed name / version
+  # query) — it's currently served from a stable URL, so that isn't safe yet.
+  <FilesMatch "airports\.json$">
+    Header always set Cache-Control "public, max-age=86400, must-revalidate"
+    Header always unset Expires
+  </FilesMatch>
+</IfModule>

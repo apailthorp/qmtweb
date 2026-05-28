@@ -9,9 +9,10 @@ concurrency:
   group: deploy-production
   cancel-in-progress: false
 
-# Deploy uses FTP secrets, not the GITHUB_TOKEN — keep the token read-only.
+# Deploy uses FTP secrets for the upload; the token only needs write access
+# to cut the per-release git tag + GitHub Release.
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   deploy:
@@ -47,6 +48,11 @@ jobs:
       - name: E2E tests
         run: npm run test:e2e
 
+      # Stamp the whole-site version (semver + commit SHA) into index.html
+      # right before upload, so the live page reports the exact deployed build.
+      - name: Stamp version into site
+        run: node scripts/stamp-version.mjs
+
       - name: Deploy to AccuWeb via FTPS
         # Pinned to an immutable SHA (3rd-party action handling deploy creds).
         uses: SamKirkland/FTP-Deploy-Action@8e83cea8672e3fbcbb9fdafff34debf6ae4c5f65 # v4.3.5
@@ -61,7 +67,28 @@ jobs:
           local-dir: ./site/
           server-dir: ${{ secrets.FTP_REMOTE_DIR || './' }}
           # Exclude repo/CI cruft and the diff-state file from uploads.
+          # NB: .htaccess is intentionally NOT excluded (it ships the cache
+          # policy); only .git* and .DS_Store are filtered out.
           exclude: |
             **/.git*
             **/.git*/**
             **/.DS_Store
+
+      # Cut a git tag + GitHub Release for the semver in package.json. Skips
+      # when the tag already exists (i.e. no version bump since last deploy),
+      # so only an actual release bump produces a new tag/Release.
+      - name: Tag & GitHub Release
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VER="v$(node -p "require('./package.json').version")"
+          if gh release view "$VER" >/dev/null 2>&1; then
+            echo "Release $VER already exists — no version bump, skipping."
+          else
+            echo "Creating release $VER at $GITHUB_SHA"
+            gh release create "$VER" \
+              --target "$GITHUB_SHA" \
+              --title "$VER" \
+              --generate-notes
+          fi
