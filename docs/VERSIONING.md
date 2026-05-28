@@ -156,7 +156,8 @@ disappears while you're scrolled up (so the fixed tag never floats over content)
 - **Tag never hides / hides too eagerly.** `version.js` shows the tag only at
   (or within `threshold` of) the bottom of a scrollable page and hides it while
   scrolled up, where the fixed tag would otherwise float over content
-  (`shouldHide`, on scroll/resize/load). Tune the `threshold` (px) if needed;
+  (`shouldHide`, recomputed on scroll/resize/load + content-size changes via a
+  `ResizeObserver` — e.g. the manage panel expanding). Tune the `threshold` (px) if needed;
   it's unit-tested. (An earlier rect-overlap-with-footer check never fired,
   because the tag sits in `main`'s bottom padding, below the footer.)
 - **No Release was created on deploy.** The tag already existed (no semver bump),
