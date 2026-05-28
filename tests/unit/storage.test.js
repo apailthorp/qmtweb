@@ -5,6 +5,9 @@ import {
   STORAGE_KEY,
   LIST_MIN,
   LIST_MAX,
+  createQueryStore,
+  defaultQuery,
+  QUERY_KEY,
 } from "../../site/js/storage.js";
 import { DEFAULT_SEED, DEFAULT_SELECTED } from "../../site/js/airports.js";
 
@@ -120,5 +123,59 @@ describe("createStore without working storage", () => {
     expect(store.available).toBe(false);
     expect(store.load()).toEqual(defaultState());
     expect(() => store.save({ selected: ["KSEA"], list: ["KSEA"] })).not.toThrow();
+  });
+});
+
+describe("createQueryStore", () => {
+  let storage;
+  let store;
+
+  beforeEach(() => {
+    storage = memStorage();
+    store = createQueryStore(storage);
+  });
+
+  it("defaultQuery is decode-off, tabular-off, hours 0", () => {
+    expect(defaultQuery()).toEqual({ decoded: false, tabular: false, hours: "0" });
+  });
+
+  it("load() returns defaults when empty", () => {
+    expect(store.load()).toEqual({ decoded: false, tabular: false, hours: "0" });
+  });
+
+  it("round-trips decoded + tabular + hours", () => {
+    store.save({ decoded: true, tabular: true, hours: "6" });
+    expect(store.load()).toEqual({ decoded: true, tabular: true, hours: "6" });
+  });
+
+  it("coerces hours to a string on save", () => {
+    store.save({ decoded: false, tabular: false, hours: 12 });
+    expect(store.load()).toEqual({ decoded: false, tabular: false, hours: "12" });
+  });
+
+  it("defaults tabular=false for older data that predates the field", () => {
+    storage.setItem(QUERY_KEY, JSON.stringify({ decoded: true, hours: "3" }));
+    expect(store.load()).toEqual({ decoded: true, tabular: false, hours: "3" });
+  });
+
+  it("falls back to defaults on corrupt JSON", () => {
+    storage.setItem(QUERY_KEY, "{bad");
+    expect(store.load()).toEqual(defaultQuery());
+  });
+
+  it("ignores wrong-typed fields", () => {
+    storage.setItem(QUERY_KEY, JSON.stringify({ decoded: "yes", tabular: 1, hours: 3 }));
+    expect(store.load()).toEqual({ decoded: false, tabular: false, hours: "0" });
+  });
+
+  it("uses a versioned key", () => {
+    expect(QUERY_KEY).toMatch(/\.v1$/);
+  });
+
+  it("no-ops without working storage", () => {
+    const s = createQueryStore(null);
+    expect(s.available).toBe(false);
+    expect(s.load()).toEqual(defaultQuery());
+    expect(() => s.save({ decoded: true, hours: "1" })).not.toThrow();
   });
 });

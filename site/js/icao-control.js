@@ -85,7 +85,9 @@ export function initIcaoControl({
   // --- Rendering ---
 
   function syncInput() {
-    const value = selected.join(",");
+    // Space-separated is the preferred display form; parseIcaoList accepts
+    // commas or whitespace, and the aviationweather.gov SPA accepts both.
+    const value = selected.join(" ");
     if (input.value !== value) input.value = value;
   }
 
@@ -176,12 +178,26 @@ export function initIcaoControl({
 
   // --- Mutations ---
 
-  function addToList(icao) {
+  function addToList(icao, index = null) {
     if (!isValidIcao(icao)) return false;
     if (list.includes(icao)) return false;
     if (list.length >= LIST_MAX) return false;
-    list.push(icao);
+    if (index === null || index >= list.length) {
+      list.push(icao);
+    } else {
+      list.splice(Math.max(0, index), 0, icao);
+    }
     return true;
+  }
+
+  // Index just after the last currently-selected row (in list order), or
+  // the end of the list if nothing is selected.
+  function indexAfterLastSelected() {
+    let last = -1;
+    for (let i = 0; i < list.length; i++) {
+      if (selected.includes(list[i])) last = i;
+    }
+    return last >= 0 ? last + 1 : list.length;
   }
 
   function removeFromList(icao) {
@@ -463,7 +479,9 @@ export function initIcaoControl({
     if (!btn || btn.disabled) return;
     e.preventDefault();
     const icao = btn.dataset.addIcao;
-    if (addToList(icao)) {
+    // Insert right after the last checked row so it joins the active set
+    // rather than landing at the very bottom of the list.
+    if (addToList(icao, indexAfterLastSelected())) {
       if (!selected.includes(icao)) {
         const sel = new Set([...selected, icao]);
         selected = list.filter((c) => sel.has(c));

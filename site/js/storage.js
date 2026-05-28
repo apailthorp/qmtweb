@@ -82,6 +82,58 @@ function parseV2(raw) {
   }
 }
 
+// --- Query settings (Decode + Tabular toggles + Hours window) ---
+// Stored separately from the ICAO list since it's a distinct concern.
+// Shape: { decoded: boolean, tabular: boolean, hours: string }
+// New boolean fields default to false, so older persisted data upgrades
+// cleanly without a key-version bump.
+
+export const QUERY_KEY = "qmtweb.query.v1";
+
+export function defaultQuery() {
+  return { decoded: false, tabular: false, hours: "0" };
+}
+
+export function createQueryStore(storage = globalThis.localStorage ?? null) {
+  const s = safeStorage(storage);
+
+  return {
+    load() {
+      if (!s) return defaultQuery();
+      try {
+        const raw = s.getItem(QUERY_KEY);
+        if (raw === null) return defaultQuery();
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          return defaultQuery();
+        }
+        return {
+          decoded: typeof parsed.decoded === "boolean" ? parsed.decoded : false,
+          tabular: typeof parsed.tabular === "boolean" ? parsed.tabular : false,
+          hours: typeof parsed.hours === "string" ? parsed.hours : "0",
+        };
+      } catch {
+        return defaultQuery();
+      }
+    },
+
+    save(query) {
+      if (!s) return;
+      try {
+        s.setItem(QUERY_KEY, JSON.stringify({
+          decoded: Boolean(query?.decoded),
+          tabular: Boolean(query?.tabular),
+          hours: String(query?.hours ?? "0"),
+        }));
+      } catch {
+        // Non-fatal.
+      }
+    },
+
+    available: s !== null,
+  };
+}
+
 export function createStore(storage = globalThis.localStorage ?? null) {
   const s = safeStorage(storage);
 

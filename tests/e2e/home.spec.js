@@ -35,7 +35,7 @@ test.describe("pailthorp.net home page", () => {
   test("METAR form is prepopulated with the expected airports", async ({ page }) => {
     const ids = page.locator("#ids");
     const value = await ids.inputValue();
-    const codes = value.split(",").map((s) => s.trim());
+    const codes = value.split(/\s+/).filter(Boolean);
     expect(codes).toEqual(EXPECTED_AIRPORTS);
   });
 
@@ -44,18 +44,96 @@ test.describe("pailthorp.net home page", () => {
     expect(action).toBe("https://aviationweather.gov/data/metar/");
   });
 
-  test("Format radio binds to `decoded` param with 0/1 values", async ({ page }) => {
-    const raw = page.locator("input[name='decoded'][value='0']");
-    const translated = page.locator("input[name='decoded'][value='1']");
-    await expect(raw).toBeChecked();
-    await expect(translated).not.toBeChecked();
+  test("Decode toggle defaults off and submits decoded=1 when on", async ({ page }) => {
+    const toggle = page.locator("#decoded-toggle");
+    await expect(toggle).toHaveAttribute("type", "checkbox");
+    await expect(toggle).toHaveAttribute("role", "switch");
+    await expect(toggle).toHaveAttribute("name", "decoded");
+    await expect(toggle).toHaveAttribute("value", "1");
+    await expect(toggle).not.toBeChecked();          // off by default
+
+    await toggle.check();
+    await expect(toggle).toBeChecked();              // user can flip it on
   });
 
   test("Submit buttons bind to `taf` with 0/1 values", async ({ page }) => {
     const metarOnly = page.locator("button[name='taf'][value='0']");
     const metarTaf = page.locator("button[name='taf'][value='1']");
     await expect(metarOnly).toHaveText("METAR");
-    await expect(metarTaf).toHaveText(/METAR \+ TAF/);
+    await expect(metarTaf).toHaveText("METAR/TAF");
+  });
+
+  test("Decode + Hours persist across reload (Tabular stays off)", async ({ page }) => {
+    await page.locator("#decoded-toggle").check();
+    await page.locator("#hours-select").selectOption("6");
+
+    await page.reload();
+
+    await expect(page.locator("#decoded-toggle")).toBeChecked();
+    await expect(page.locator("#tabular-toggle")).not.toBeChecked();
+    await expect(page.locator("#hours-select")).toHaveValue("6");
+  });
+
+  test("Tabular toggle is a switch bound to tabular=1, off by default", async ({ page }) => {
+    const toggle = page.locator("#tabular-toggle");
+    await expect(toggle).toHaveAttribute("role", "switch");
+    await expect(toggle).toHaveAttribute("name", "tabular");
+    await expect(toggle).toHaveAttribute("value", "1");
+    await expect(toggle).not.toBeChecked();
+  });
+
+  test("Decode and Tabular are mutually exclusive", async ({ page }) => {
+    const decode = page.locator("#decoded-toggle");
+    const tabular = page.locator("#tabular-toggle");
+
+    await decode.check();
+    await expect(decode).toBeChecked();
+    await expect(tabular).not.toBeChecked();
+
+    // Turning Tabular on forces Decode off.
+    await tabular.check();
+    await expect(tabular).toBeChecked();
+    await expect(decode).not.toBeChecked();
+
+    // And back the other way.
+    await decode.check();
+    await expect(decode).toBeChecked();
+    await expect(tabular).not.toBeChecked();
+
+    // Both may be off.
+    await decode.uncheck();
+    await expect(decode).not.toBeChecked();
+    await expect(tabular).not.toBeChecked();
+  });
+
+  test("mutual exclusion survives a reload", async ({ page }) => {
+    await page.locator("#decoded-toggle").check();
+    await page.locator("#tabular-toggle").check(); // flips decode off
+    await page.reload();
+    await expect(page.locator("#tabular-toggle")).toBeChecked();
+    await expect(page.locator("#decoded-toggle")).not.toBeChecked();
+  });
+
+  test("Tabular disables the METAR/TAF button (Tabular excludes TAF)", async ({ page }) => {
+    const metarTaf = page.locator("button[name='taf'][value='1']");
+    const metarOnly = page.locator("button[name='taf'][value='0']");
+    await expect(metarTaf).toBeEnabled();
+
+    await page.locator("#tabular-toggle").check();
+    await expect(metarTaf).toBeDisabled();
+    await expect(metarOnly).toBeEnabled(); // plain METAR still allowed
+
+    // Turning Tabular off (here via Decode, which excludes Tabular) re-enables it.
+    await page.locator("#decoded-toggle").check();
+    await expect(page.locator("#tabular-toggle")).not.toBeChecked();
+    await expect(metarTaf).toBeEnabled();
+  });
+
+  test("METAR/TAF disabled state persists across reload", async ({ page }) => {
+    await page.locator("#tabular-toggle").check();
+    await page.reload();
+    await expect(page.locator("#tabular-toggle")).toBeChecked();
+    await expect(page.locator("button[name='taf'][value='1']")).toBeDisabled();
   });
 
   test("invalid ICAOs surface an inline error and block submission", async ({ page }) => {
