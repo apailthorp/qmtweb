@@ -1,6 +1,7 @@
 import { validateIcaoList } from "./metar.js";
 import { initIcaoControl } from "./icao-control.js";
 import { createStore, createQueryStore } from "./storage.js";
+import { initVersionTag } from "./version.js";
 
 const form = document.getElementById("metar-form");
 const idsInput = document.getElementById("ids");
@@ -105,3 +106,6 @@ form?.addEventListener("submit", (event) => {
 });
 
 idsInput?.addEventListener("input", clearError);
+
+// Show the deployed version stamp (bottom-right, hides on collision).
+initVersionTag();
