@@ -24,8 +24,6 @@ import { LIST_MIN, LIST_MAX } from "./storage.js";
 import { isValidIcao, parseIcaoList } from "./metar.js";
 import { loadAirports, searchAirports } from "./search.js";
 
-const SEED_SET = new Set(DEFAULT_SEED);
-
 function uniq(codes) {
   return Array.from(new Set(codes));
 }
@@ -93,7 +91,7 @@ export function initIcaoControl({
 
   function makeRow(icao, index) {
     const row = document.createElement("li");
-    row.className = SEED_SET.has(icao) ? "icao-row" : "icao-row icao-row-added";
+    row.className = "icao-row";
     row.draggable = true;
     row.dataset.icao = icao;
 
