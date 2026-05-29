@@ -656,23 +656,27 @@ footer {
 
 /* Query + Online live together so they can sit inline (collapsed) or as the
  * top row (expanded). */
-/* Always its own full-width line — chips wrap above, query + toggle below — so
- * the nowrap toggle can never push past the box edge at narrow widths. */
+/* Flows inline after the last tile, filling the remaining width. flex-basis 0
+ * means it doesn't demand space, but its automatic min size (min-content =
+ * one-tile input + the nowrap toggle) is what flex-wrap uses to break it to a
+ * new line — only when it truly can't fit, never overflowing. NB: do NOT set an
+ * explicit min-width here; that overrides the min-content floor and reintroduces
+ * the overflow. */
 .tile-query-wrap {
   display: flex;
   align-items: center;
   gap: 0.3rem;
-  flex: 1 1 100%;
-  min-width: 0;
+  flex: 1 1 0;
 }
 
 .tile-control.is-open .tile-query-wrap {
-  order: -2;          /* jump above the tiles when expanded */
+  order: -2;            /* jump above the tiles when expanded */
+  flex: 0 0 auto;       /* natural height in the column layout (full width via stretch) */
 }
 
 .tile-query {
   flex: 1;
-  min-width: 5rem;
+  min-width: 3.5rem;   /* can shrink to ~one tile before the wrap kicks in */
   border: none;
   outline: none;
   font: inherit;
