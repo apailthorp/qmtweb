@@ -37,6 +37,10 @@ infra/*_override.tf.json
 .env
 .env.local
 
+# Server-side secrets (lives ABOVE public_html on the host; never committed)
+qmtweb-secrets.php
+**/qmtweb-secrets.php
+
 # Claude Code local-only settings
 .claude/settings.local.json
 

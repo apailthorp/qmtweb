@@ -331,6 +331,8 @@ export function initIcaoControl({
   // --- Query input: autocomplete + tokenization ---
 
   let searchSeq = 0;
+  let onlineSeq = 0;
+  let onlineAbort = null;
 
   function setStatus(text) {
     if (searchStatusEl) searchStatusEl.textContent = text ?? "";
@@ -382,6 +384,48 @@ export function initIcaoControl({
     }
   }
 
+  // Render online (nearest-METAR) results into the same dropdown. Station shape:
+  // { icao, name, distance_km }. Clicking reuses the data-add-icao handler.
+  function renderOnlineResults(stations) {
+    if (!searchResults) return;
+    searchResults.innerHTML = "";
+    if (!stations.length) {
+      searchResults.hidden = true;
+      return;
+    }
+    searchResults.hidden = false;
+    const full = list.length >= LIST_MAX;
+    for (const s of stations) {
+      const item = document.createElement("li");
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "icao-result";
+      btn.dataset.addIcao = s.icao;
+      const isListed = list.includes(s.icao);
+      const isSelected = selected.includes(s.icao);
+      btn.disabled = isSelected || (full && !isListed);
+
+      const codeSpan = document.createElement("span");
+      codeSpan.className = "icao-result-code";
+      const codeStrong = document.createElement("strong");
+      codeStrong.textContent = s.icao;
+      codeSpan.append(codeStrong);
+
+      const nameSpan = document.createElement("span");
+      nameSpan.className = "icao-result-name";
+      const dist = typeof s.distance_km === "number" ? ` · ${s.distance_km} km` : "";
+      nameSpan.textContent = `${s.name || s.icao}${dist}`;
+
+      const hintSpan = document.createElement("span");
+      hintSpan.className = "icao-result-hint icao-result-online";
+      hintSpan.textContent = isSelected ? "active" : isListed ? "reactivate" : full ? "list full" : "online";
+
+      btn.append(codeSpan, nameSpan, hintSpan);
+      item.append(btn);
+      searchResults.append(item);
+    }
+  }
+
   async function runSearch(q) {
     if (!q || q.trim().length < 2) {
       renderResults([]);
@@ -404,8 +448,47 @@ export function initIcaoControl({
   }
 
   query.addEventListener("input", () => {
+    // A new keystroke supersedes any in-flight OR just-resolved online search:
+    // abort the request and bump the seq so a late response is discarded.
+    if (onlineAbort) onlineAbort.abort();
+    onlineSeq++;
     runSearch(query.value);
   });
+
+  // "Online ↗" — resolve the freeform query to nearby METAR stations via the PHP
+  // proxy (Tier-1 deterministic + optional free-LLM Tier-2, grounded in live
+  // aviationweather.gov data). On-click only; results land in the same dropdown.
+  async function runOnlineSearch() {
+    const q = query.value.trim();
+    if (!q) {
+      renderResults([]); // clear any stale results before prompting
+      setStatus("Type a place, ZIP, or airport, then tap Online.");
+      return;
+    }
+    const seq = ++onlineSeq;
+    if (onlineAbort) onlineAbort.abort();
+    onlineAbort = new AbortController();
+    setStatus("Searching online…");
+    try {
+      const res = await fetch(`./api/resolve.php?q=${encodeURIComponent(q)}`, { signal: onlineAbort.signal });
+      if (seq !== onlineSeq) return;
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data) {
+        renderOnlineResults([]);
+        setStatus(data?.error ?? "Online search is unavailable right now.");
+        return;
+      }
+      const stations = Array.isArray(data.stations) ? data.stations : [];
+      renderOnlineResults(stations);
+      setStatus(stations.length ? (data.interpreted ?? "") : "No nearby reporting stations found.");
+    } catch (err) {
+      if (err?.name === "AbortError") return;
+      renderOnlineResults([]);
+      setStatus("Online search failed — try again.");
+    }
+  }
+
+  onlineBtn?.addEventListener("click", runOnlineSearch);
 
   // Tokenize on a delimiter only when the just-completed word is a valid ICAO,
   // so place queries like "Ilwaco metar" keep their spaces.

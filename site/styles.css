@@ -394,6 +394,10 @@ button:hover {
   letter-spacing: 0.04em;
 }
 
+/* Online (nearest-METAR) result rows get an accent badge to distinguish them
+ * from the bundled-local matches. */
+.icao-result-hint.icao-result-online { color: var(--accent); }
+
 .icao-actions {
   display: flex;
   flex-wrap: wrap;
