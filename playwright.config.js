@@ -18,7 +18,13 @@ export default defineConfig({
       // Order matters: spread Desktop Chrome first (which sets a 1280x720
       // viewport), then override viewport so the manage panel's 12 rows
       // fit without page scrolling — drag-during-scroll is brittle.
-      use: { ...devices["Desktop Chrome"], viewport: { width: 1280, height: 1280 } },
+      // reducedMotion skips the tile FLIP animation (version.js/icao-control.js
+      // honor it) so tiles are positionally stable for clicks/drags.
+      use: {
+        ...devices["Desktop Chrome"],
+        viewport: { width: 1280, height: 1280 },
+        reducedMotion: "reduce",
+      },
     },
   ],
   webServer: {
