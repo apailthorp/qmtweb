@@ -4,16 +4,17 @@ import { createStore, createQueryStore } from "./storage.js";
 import { initVersionTag } from "./version.js";
 
 const form = document.getElementById("metar-form");
-const idsInput = document.getElementById("ids");
+const hiddenIds = document.getElementById("ids");
 const errorEl = document.getElementById("form-error");
-const presetGrid = document.getElementById("icao-presets");
+const tileControl = document.getElementById("tile-control");
+const tilesEl = document.getElementById("icao-tiles");
+const queryEl = document.getElementById("icao-query");
 const countEl = document.getElementById("icao-count");
 const actionsEl = document.getElementById("icao-actions");
-const searchInput = document.getElementById("icao-search");
 const searchResults = document.getElementById("icao-search-results");
 const searchStatusEl = document.getElementById("icao-search-status");
+const onlineBtn = document.getElementById("icao-search-external");
 const manageToggle = document.getElementById("manage-toggle");
-const managePanel = document.getElementById("manage-panel");
 const decodedToggle = document.getElementById("decoded-toggle");
 const tabularToggle = document.getElementById("tabular-toggle");
 const hoursSelect = document.getElementById("hours-select");
@@ -29,17 +30,18 @@ function clearError() {
   errorEl.hidden = true;
 }
 
-if (presetGrid) {
+if (tilesEl && hiddenIds) {
   initIcaoControl({
-    input: idsInput,
-    presetGrid,
+    control: tileControl,
+    hiddenIds,
+    query: queryEl,
+    tiles: tilesEl,
     countEl,
     actionsEl,
-    searchInput,
     searchResults,
     searchStatusEl,
+    onlineBtn,
     manageToggle,
-    managePanel,
     store: createStore(),
   });
 }
@@ -91,21 +93,21 @@ hoursSelect?.addEventListener("change", saveQuery);
 syncTafButton(); // reflect persisted state on load
 
 form?.addEventListener("submit", (event) => {
-  const { ok, invalid } = validateIcaoList(idsInput.value);
+  const { ok, invalid } = validateIcaoList(hiddenIds.value);
   if (!ok) {
     event.preventDefault();
     showError(
       invalid.length > 0
         ? `Invalid ICAO code${invalid.length > 1 ? "s" : ""}: ${invalid.join(", ")}`
-        : "Enter at least one ICAO code (e.g. KSEA).",
+        : "Add at least one airport (e.g. KSEA).",
     );
-    idsInput.focus();
+    queryEl?.focus();
     return;
   }
   clearError();
 });
 
-idsInput?.addEventListener("input", clearError);
+queryEl?.addEventListener("input", clearError);
 
 // Show the deployed version stamp (bottom-left; hides while scrolled up).
 initVersionTag();

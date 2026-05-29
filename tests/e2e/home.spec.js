@@ -13,15 +13,32 @@ test.describe("pailthorp.net home page", () => {
     await expect(page.locator(".tagline")).toContainText(/METAR/i);
   });
 
-  test("shows the version stamp (pinned bottom-right, 'dev' when unstamped)", async ({ page }) => {
+  test("shows the version stamp (pinned bottom-left, 'dev' when unstamped)", async ({ page }) => {
     const stamp = page.locator("#app-version");
     // version.js replaces the unstamped __APP_VERSION__ token with "dev" locally.
     await expect(stamp).toHaveText("dev");
     // Both checks are viewport-independent. We deliberately don't assert
     // toBeVisible(): the badge auto-hides via opacity (not display/visibility),
-    // so that depends on footer-collision layout and wouldn't be meaningful here.
+    // so that depends on scroll position and wouldn't be meaningful here.
     const position = await stamp.evaluate((el) => getComputedStyle(el).position);
     expect(position).toBe("fixed");
+  });
+
+  test("version stamp hides when the manage panel expands the page past the viewport", async ({ page }) => {
+    // Measure the collapsed content height at a short viewport (so scrollHeight
+    // reflects content, not the viewport), then size the viewport just above it.
+    // Deterministic across fonts/environments — no hard-coded pixel height.
+    await page.setViewportSize({ width: 1280, height: 400 });
+    const collapsedH = await page.evaluate(() => document.documentElement.scrollHeight);
+    await page.setViewportSize({ width: 1280, height: collapsedH + 60 });
+
+    const stamp = page.locator("#app-version");
+    await expect(stamp).not.toHaveClass(/\bis-hidden\b/); // collapsed fits → shown
+
+    // Expanding grows the document with no scroll/resize event — only a
+    // ResizeObserver recompute hides the now-floating tag (we're still at top).
+    await page.locator("#manage-toggle").click();
+    await expect(stamp).toHaveClass(/\bis-hidden\b/); // expanded overflows → hidden
   });
 
   test("KING 5 radar grid has all 16 links pointing at the tegna-media CDN", async ({ page }) => {
@@ -149,8 +166,12 @@ test.describe("pailthorp.net home page", () => {
     await expect(page.locator("button[name='taf'][value='1']")).toBeDisabled();
   });
 
-  test("invalid ICAOs surface an inline error and block submission", async ({ page }) => {
-    await page.locator("#ids").fill("BAD,KBFI");
+  test("an empty selection blocks submission with an inline error", async ({ page }) => {
+    // The tile control only ever puts valid ICAOs in the hidden #ids, so the
+    // sole error path is submitting with nothing selected.
+    await page.locator("#manage-toggle").click();
+    await page.locator("button[data-action='select-none']").click();
+    await expect(page.locator("#icao-count")).toContainText("(0/12)");
 
     // Capture navigation attempts; if validation blocks, no nav happens.
     let navigated = false;
@@ -160,16 +181,17 @@ test.describe("pailthorp.net home page", () => {
 
     await page.locator("button[name='taf'][value='0']").click();
     await expect(page.locator("#form-error")).toBeVisible();
-    await expect(page.locator("#form-error")).toContainText(/BAD/);
+    await expect(page.locator("#form-error")).toContainText(/add at least one/i);
     expect(navigated).toBe(false);
   });
 
-  test("editing the ICAO field clears a prior error", async ({ page }) => {
-    await page.locator("#ids").fill("BAD");
+  test("typing in the query clears a prior error", async ({ page }) => {
+    await page.locator("#manage-toggle").click();
+    await page.locator("button[data-action='select-none']").click();
     await page.locator("button[name='taf'][value='0']").click();
     await expect(page.locator("#form-error")).toBeVisible();
 
-    await page.locator("#ids").fill("KPAE");
+    await page.locator("#icao-query").fill("K");
     await expect(page.locator("#form-error")).toBeHidden();
   });
 });

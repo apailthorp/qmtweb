@@ -104,5 +104,13 @@ export function initVersionTag(doc = document) {
   // `load` also covers the browser restoring a saved scroll position after a
   // reload, which can happen after this module's initial pass.
   window.addEventListener("load", schedule);
+
+  // The document can grow/shrink without a scroll or resize event — e.g. the
+  // manage panel expanding/collapsing or search results appearing. That changes
+  // scrollHeight (and whether we're "at the bottom"), so recompute on it too.
+  if (typeof ResizeObserver !== "undefined" && doc.body) {
+    new ResizeObserver(schedule).observe(doc.body);
+  }
+
   schedule(); // initial pass once layout has settled
 }
