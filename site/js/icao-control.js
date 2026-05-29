@@ -334,8 +334,17 @@ export function initIcaoControl({
   let onlineSeq = 0;
   let onlineAbort = null;
 
-  function setStatus(text) {
-    if (searchStatusEl) searchStatusEl.textContent = text ?? "";
+  // Status states drive the CSS indicator next to the message:
+  //   "loading"  → animated spinner (in-flight Online query)
+  //   "notfound" → "no result" glyph (empty stations / 404 from proxy)
+  //   "error"    → warning glyph (network failure / dataset unavailable)
+  //   ""         → neutral text only; clears any prior indicator
+  function setStatus(text, state = "") {
+    if (!searchStatusEl) return;
+    searchStatusEl.textContent = text ?? "";
+    searchStatusEl.classList.toggle("is-loading",  state === "loading");
+    searchStatusEl.classList.toggle("is-notfound", state === "notfound");
+    searchStatusEl.classList.toggle("is-error",    state === "error");
   }
 
   function renderResults(results) {
@@ -437,7 +446,7 @@ export function initIcaoControl({
     const data = await ensureDataset();
     if (seq !== searchSeq) return;
     if (!data) {
-      setStatus("Search unavailable — type the ICAO directly.");
+      setStatus("Search unavailable — type the ICAO directly.", "error");
       return;
     }
     setStatus("");
@@ -452,6 +461,9 @@ export function initIcaoControl({
     // abort the request and bump the seq so a late response is discarded.
     if (onlineAbort) onlineAbort.abort();
     onlineSeq++;
+    // Editing always clears any prior loading/not-found/error indicator so the
+    // user gets a fresh slate; runSearch overlays its own status as needed.
+    setStatus("");
     runSearch(query.value);
   });
 
@@ -468,23 +480,32 @@ export function initIcaoControl({
     const seq = ++onlineSeq;
     if (onlineAbort) onlineAbort.abort();
     onlineAbort = new AbortController();
-    setStatus("Searching online…");
+    setStatus("Searching online…", "loading");
     try {
       const res = await fetch(`./api/resolve.php?q=${encodeURIComponent(q)}`, { signal: onlineAbort.signal });
       if (seq !== onlineSeq) return;
       const data = await res.json().catch(() => null);
       if (!res.ok || !data) {
         renderOnlineResults([]);
-        setStatus(data?.error ?? "Online search is unavailable right now.");
+        // A structured error from the proxy ("couldn't work out a location…")
+        // is semantically not-found; a fetch with no body at all is an error.
+        setStatus(
+          data?.error ?? "Online search is unavailable right now.",
+          data?.error ? "notfound" : "error",
+        );
         return;
       }
       const stations = Array.isArray(data.stations) ? data.stations : [];
       renderOnlineResults(stations);
-      setStatus(stations.length ? (data.interpreted ?? "") : "No nearby reporting stations found.");
+      if (stations.length) {
+        setStatus(data.interpreted ?? "");
+      } else {
+        setStatus("No nearby reporting stations found.", "notfound");
+      }
     } catch (err) {
       if (err?.name === "AbortError") return;
       renderOnlineResults([]);
-      setStatus("Online search failed — try again.");
+      setStatus("Online search failed — try again.", "error");
     }
   }
 
@@ -507,7 +528,16 @@ export function initIcaoControl({
     const trimmed = query.value.replace(/[ ,]+$/, "");
     const lastWord = trimmed.split(/[ ,]+/).pop() ?? "";
     const up = lastWord.toUpperCase();
-    if (isValidIcao(up)) {
+    // Syntactic 4-letter check alone tokenizes common English words like
+    // "BASE" or "TIME" when users type natural-language queries. Require the
+    // code to actually be known — present in the seed or the loaded airports
+    // dataset. When the dataset is still loading we fall back to syntax-only
+    // so a fast typer can still tile real codes before data arrives.
+    const datasetReady = dataset !== null;
+    const looksReal =
+      isValidIcao(up) &&
+      (!datasetReady || describeIcao(up, lookupByIcao) !== null);
+    if (looksReal) {
       e.preventDefault();
       query.value = trimmed.slice(0, trimmed.length - lastWord.length).replace(/[ ,]+$/, "");
       addAndSelect(up);

@@ -41,12 +41,22 @@ json_out([
 
 // --- Tier 1: deterministic intent ---------------------------------------------
 // Strip filler, detect a 5-digit ZIP, else treat the remainder as a place name.
+// The filler list covers natural-language phrasings like "Airforce base in
+// Washington" or "San Juan Islands airfields" so Nominatim sees a clean place.
+// \b boundaries prevent false matches inside place names (e.g. "field" doesn't
+// match inside "Springfield"). Keep additions narrow: words that almost always
+// describe an aviation facility category or are prepositions.
 function deterministic_intent(string $q): array {
     if (preg_match('/\b(\d{5})\b/', $q, $m)) {
         return ['zip' => $m[1], 'count' => NEAREST_DEFAULT];
     }
     $place = preg_replace(
-        '/\b(nearest|closest|near|airports?|metars?|tafs?|to|the|for|me|stations?|reporting|weather)\b/i',
+        '/\b('
+        . 'nearest|closest|near|'
+        . 'airports?|airfields?|airforce|airbase|bases?|field|'
+        . 'metars?|tafs?|stations?|reporting|weather|'
+        . 'to|the|for|me|in|at|of'
+        . ')\b/i',
         ' ',
         $q
     );

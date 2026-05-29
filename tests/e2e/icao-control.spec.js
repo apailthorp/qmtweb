@@ -401,4 +401,78 @@ test.describe("ICAO tiles — online search (mocked PHP proxy)", () => {
     await expect(page.locator("#icao-search-status")).toContainText(/type a place/i);
     expect(called).toBe(false);
   });
+
+  test("shows an animated spinner while in flight; clears on response", async ({ page }) => {
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    await page.route("**/api/resolve.php**", async (route) => {
+      await gate;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          interpreted: "Nearest METAR",
+          stations: [{ icao: "KAST", name: "Astoria", distance_km: 1 }],
+        }),
+      });
+    });
+
+    await page.locator("#icao-query").fill("test");
+    await page.locator("#icao-search-external").click();
+    await expect(page.locator("#icao-search-status")).toHaveClass(/is-loading/);
+    release();
+    await expect(page.locator("#icao-search-status")).not.toHaveClass(/is-loading/);
+  });
+
+  test("shows a not-found indicator on empty stations; clears on next edit", async ({ page }) => {
+    await page.route("**/api/resolve.php**", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ interpreted: "Nearest METAR to nowhere", stations: [] }),
+      }),
+    );
+
+    await page.locator("#icao-query").fill("nothing nearby");
+    await page.locator("#icao-search-external").click();
+    await expect(page.locator("#icao-search-status")).toHaveClass(/is-notfound/);
+    await expect(page.locator("#icao-search-status")).toContainText(/no nearby reporting stations/i);
+
+    // Any edit clears the indicator so the user gets a fresh slate.
+    await page.locator("#icao-query").pressSequentially("x");
+    await expect(page.locator("#icao-search-status")).not.toHaveClass(/is-notfound/);
+  });
+});
+
+test.describe("ICAO tiles — tokenizer requires known codes", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto("/");
+    await openPanel(page);
+  });
+
+  test("a 4-letter word that isn't a real ICAO (e.g. BASE) does NOT tokenize", async ({ page }) => {
+    const q = page.locator("#icao-query");
+    // Warm the dataset so the membership check is active; a known prefix gives
+    // us a real local result, signalling lookupByIcao is populated.
+    await q.fill("Sea");
+    await expect(page.locator("#icao-search-results .icao-result").first()).toBeVisible();
+    await q.fill("");
+    await q.pressSequentially("BASE ");
+    // No spurious BASE tile, query keeps the literal text.
+    await expect(page.locator(tile("BASE"))).toHaveCount(0);
+    await expect(q).toHaveValue("BASE ");
+  });
+
+  test("typed natural-language phrase produces no tiles for any of its words", async ({ page }) => {
+    const q = page.locator("#icao-query");
+    await q.fill("Sea");
+    await expect(page.locator("#icao-search-results .icao-result").first()).toBeVisible();
+    await q.fill("");
+    await q.pressSequentially("airforce base in Washington ");
+    // None of {AIRF (5 char), BASE (4 char), WASH (4 char prefix typed mid-word)}
+    // should appear as tiles; the only 4-letter candidate "BASE" is a real
+    // English word that fails the membership check.
+    await expect(page.locator(tile("BASE"))).toHaveCount(0);
+    await expect(page.locator(tile("AIRF"))).toHaveCount(0);
+  });
 });

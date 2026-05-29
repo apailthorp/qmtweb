@@ -326,6 +326,45 @@ button:hover {
   font-size: 0.8rem;
   color: var(--fg-muted);
   min-height: 1rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4em;
+}
+
+/* Spinner while an Online query is in flight (CSS-only border ring). */
+.icao-search-status.is-loading::before {
+  content: "";
+  width: 0.85em;
+  height: 0.85em;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: icao-spin 0.75s linear infinite;
+}
+
+/* Distinct indicators for "no result" vs. upstream failure. Both clear as
+   soon as the user edits the query (input handler resets state). */
+.icao-search-status.is-notfound {
+  color: var(--accent, #b85);
+}
+.icao-search-status.is-notfound::before {
+  content: "⊘";
+  font-weight: 600;
+}
+.icao-search-status.is-error {
+  color: var(--error, #c33);
+}
+.icao-search-status.is-error::before {
+  content: "⚠";
+  font-weight: 600;
+}
+
+@keyframes icao-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .icao-search-status.is-loading::before { animation: none; }
 }
 
 .icao-search-results {
