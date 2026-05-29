@@ -7,16 +7,15 @@ chosen station list.
 Select ICAO stations once — search, reorder, and size the list from 1 to 20
 fields. The list, its order, and the query options (decode, tabular, hours) are
 stored in the browser (localStorage) and persist across visits. Submitting
-forwards the stations to aviationweather.gov's decoded METAR/TAF view, which
+forwards the stations to aviationweather.gov's METAR/TAF view, which
 serves the METAR/TAF data.
 
 The page also carries fixed weather links: NWS forecast products (Graphical
 Forecast for Aviation, Seattle Area Forecast Discussion) and the KING 5
-radar/satellite animations. The radar/satellite set is a 16-link table laid out
-4×4, collapsing to two columns on small screens.
+regional radar/satellite animations.
 
-Source for [pailthorp.net](https://pailthorp.net). Also a demo/testing project
-for the persistence behavior and the test/CI/deploy pipeline.
+Source for [pailthorp.net](https://pailthorp.net), a demo/testing project for
+persistence behavior and a test/CI/deploy pipeline.
 
 ## Layout
 
