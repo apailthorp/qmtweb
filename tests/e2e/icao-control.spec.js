@@ -68,13 +68,13 @@ test.describe("ICAO tiles — collapsed defaults", () => {
     expect(await idsCodes(page)).toEqual(DEFAULT_6);
   });
 
-  test("Online button is hidden until expanded, then visible + disabled", async ({ page }) => {
+  test("Online button is hidden until expanded, then visible + enabled", async ({ page }) => {
     await expect(page.locator("#icao-search-external")).toBeHidden();
     await openPanel(page);
     const btn = page.locator("#icao-search-external");
     await expect(btn).toBeVisible();
-    await expect(btn).toBeDisabled();
-    await expect(btn).toHaveAttribute("title", /Online search not yet wired/i);
+    await expect(btn).toBeEnabled();
+    await expect(btn).toHaveAttribute("title", /nearest/i);
   });
 });
 
@@ -336,5 +336,69 @@ test.describe("ICAO tiles — persistence", () => {
     await page.reload();
     await expect(page.locator("#icao-count")).toContainText("(7/12)");
     expect(await idsCodes(page)).toContain("KSEA");
+  });
+});
+
+test.describe("ICAO tiles — online search (mocked PHP proxy)", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto("/");
+    await openPanel(page);
+  });
+
+  test("resolves a query to nearby stations; clicking one adds a tile", async ({ page }) => {
+    await page.route("**/api/resolve.php**", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          interpreted: "Nearest METAR to Ilwaco, WA",
+          stations: [
+            { icao: "KAST", name: "Astoria Regional", distance_km: 12.3 },
+            { icao: "KOLM", name: "Olympia Regional", distance_km: 80.1 },
+          ],
+        }),
+      }),
+    );
+
+    await page.locator("#icao-query").fill("Ilwaco metar");
+    await page.locator("#icao-search-external").click();
+
+    const kast = page.locator("#icao-search-results button[data-add-icao='KAST']");
+    await expect(kast).toBeVisible();
+    await expect(kast).toContainText(/12\.3 km/);
+    await expect(kast).toContainText(/online/i);
+    await expect(page.locator("#icao-search-status")).toContainText(/Ilwaco/i);
+
+    await kast.click();
+    await expect(page.locator(tile("KAST"))).toHaveClass(/\bis-active\b/);
+    expect(await idsCodes(page)).toContain("KAST");
+  });
+
+  test("an error response surfaces a message and adds nothing", async ({ page }) => {
+    await page.route("**/api/resolve.php**", (route) =>
+      route.fulfill({
+        status: 404,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "Couldn't work out a location from that." }),
+      }),
+    );
+
+    await page.locator("#icao-query").fill("zzzz nowhere");
+    await page.locator("#icao-search-external").click();
+    await expect(page.locator("#icao-search-status")).toContainText(/couldn't work out a location/i);
+    await expect(page.locator("#icao-tiles .tile")).toHaveCount(12); // unchanged
+  });
+
+  test("an empty query prompts instead of calling the proxy", async ({ page }) => {
+    let called = false;
+    await page.route("**/api/resolve.php**", (route) => {
+      called = true;
+      route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
+    });
+
+    await page.locator("#icao-query").fill("");
+    await page.locator("#icao-search-external").click();
+    await expect(page.locator("#icao-search-status")).toContainText(/type a place/i);
+    expect(called).toBe(false);
   });
 });

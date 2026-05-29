@@ -1,11 +1,12 @@
 {
   "name": "qmtweb",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "private": true,
   "description": "Quick METAR and TAF plus weather links — static site for pailthorp.net",
   "type": "module",
   "scripts": {
     "dev": "http-server site -p 8080 -c-1 --silent",
+    "dev:php": "php -S 127.0.0.1:8080 -t site",
     "start": "http-server site -p 8080 -c-1",
     "test": "vitest run",
     "test:watch": "vitest",
