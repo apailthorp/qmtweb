@@ -582,8 +582,8 @@ button:hover {
 }
 
 footer {
-  margin-top: 2rem;
-  padding-top: 1rem;
+  margin-top: 1rem;
+  padding-top: 0.75rem;
   border-top: 1px solid var(--border);
   color: var(--fg-muted);
   font-size: 0.85rem;
@@ -622,3 +622,161 @@ footer {
 .app-version.is-hidden {
   opacity: 0;
 }
+
+/* --- Tokenized tile control (prototype) --- */
+/* One full-width box: chips flow and wrap, then the query + manage toggle ride
+ * on the input's line so there's no dead column to the right of wrapped chips. */
+.tile-box {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.3rem 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: #fff;
+  min-height: 2.4rem;
+  transition: background 0.15s ease;
+}
+
+.tile-control.is-open .tile-box {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.25rem;
+  background: #fcfcfc;
+}
+
+/* The <ol> dissolves so its <li> tiles flow as flex children of .tile-box. */
+.tiles {
+  display: contents;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* Query + Online live together so they can sit inline (collapsed) or as the
+ * top row (expanded). */
+/* Always its own full-width line — chips wrap above, query + toggle below — so
+ * the nowrap toggle can never push past the box edge at narrow widths. */
+.tile-query-wrap {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  flex: 1 1 100%;
+  min-width: 0;
+}
+
+.tile-control.is-open .tile-query-wrap {
+  order: -2;          /* jump above the tiles when expanded */
+}
+
+.tile-query {
+  flex: 1;
+  min-width: 5rem;
+  border: none;
+  outline: none;
+  font: inherit;
+  font-size: 16px;    /* keeps iOS from zooming on focus */
+  padding: 0.25rem;
+  background: transparent;
+}
+
+.tile-control.is-open .tile-query {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.4rem 0.5rem;
+}
+
+/* --- Tile: chip (collapsed) --- */
+.tile {
+  display: inline-flex;
+  align-items: center;
+  margin: 0;
+}
+
+.tile-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.15rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: #f3f3f3;
+  color: var(--fg-muted);
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.14);
+}
+
+.tile.is-active .tile-check {
+  background: #eaf1fb;
+  border-color: var(--accent);
+  color: var(--fg);
+}
+
+/* Inactive tiles: same pill shape, lighter/faded shade (seen when expanded). */
+.tile:not(.is-active) .tile-check {
+  background: #f7f8fa;
+  border-color: #e4e4e4;
+  color: #9aa0a6;
+  box-shadow: none;
+}
+
+.tile-code { font-weight: 700; }
+.tile-name { color: var(--fg-muted); font-weight: 400; }
+.tile-drag { color: var(--fg-muted); cursor: grab; user-select: none; padding: 0 0.15rem; }
+
+.tile-controls { display: inline-flex; gap: 0; flex-shrink: 0; }
+.tile-controls button {
+  background: transparent;
+  border: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  min-width: 1.6rem;
+  min-height: 1.8rem;
+  font-size: 0.95rem;
+  border-radius: 3px;
+}
+.tile-controls button:hover:not(:disabled) { background: #fff; color: var(--fg); }
+.tile-controls button:disabled { opacity: 0.3; cursor: not-allowed; }
+.tile-remove { font-size: 1.2rem; font-weight: 700; }
+.tile-remove:hover:not(:disabled) { color: var(--error); }
+
+/* Collapsed: hide the management chrome (actions/hint); the autocomplete
+ * results dropdown may still show as you type. (.icao-actions has its own
+ * display rule that outranks the [hidden] attribute, so hide it here.) */
+.tile-control:not(.is-open) .icao-actions,
+.tile-control:not(.is-open) .icao-hint { display: none; }
+
+/* Collapsed: only active tiles, chips only — no name/controls/drag. */
+.tile-control:not(.is-open) .tile:not(.is-active) { display: none; }
+.tile-control:not(.is-open) .tile-name,
+.tile-control:not(.is-open) .tile-controls,
+.tile-control:not(.is-open) .tile-drag { display: none; }
+
+/* --- Tile: row (expanded) --- */
+.tile-control.is-open .tile {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.15rem 0.25rem;
+  border-radius: 3px;
+}
+.tile-control.is-open .tile:hover { background: #f4f7fb; }
+/* The pill stays a chip-sized toggle (same look as collapsed); the airport
+ * name takes the rest of the row. */
+.tile-control.is-open .tile-check { flex: 0 0 auto; }
+.tile-control.is-open .tile-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.9rem;
+}
+
+.tile.dragging { opacity: 0.4; }
+.tile.drop-before { box-shadow: inset 0 2px 0 0 var(--accent); }
+.tile.drop-after { box-shadow: inset 0 -2px 0 0 var(--accent); }
