@@ -674,6 +674,12 @@ footer {
   flex: 0 0 auto;       /* natural height in the column layout (full width via stretch) */
 }
 
+/* Autocomplete results sit on their own full-width line directly under the
+ * query — order -1 puts them above the tiles when expanded; collapsed they
+ * naturally fall below the chips/query. */
+.tile-box .icao-search-results { flex: 0 0 100%; width: 100%; }
+.tile-control.is-open .icao-search-results { order: -1; }
+
 .tile-query {
   flex: 1;
   min-width: 3.5rem;   /* can shrink to ~one tile before the wrap kicks in */
