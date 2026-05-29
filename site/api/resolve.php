@@ -72,10 +72,11 @@ function gemini_intent(string $q): ?array {
         'generationConfig' => ['responseMimeType' => 'application/json', 'temperature' => 0],
     ];
     // Model is configurable; verify the current free-tier model when wiring the key.
-    $url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key='
-        . rawurlencode($key);
+    $url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent';
 
-    $resp = http_post_json($url, $payload);
+    // Pass the key in the x-goog-api-key header (Google's preferred method) rather
+    // than a ?key= URL param, so it never lands in server/proxy access logs.
+    $resp = http_post_json($url, $payload, ['x-goog-api-key: ' . $key]);
     $text = $resp['candidates'][0]['content']['parts'][0]['text'] ?? null;
     if (!$text) return null;
 
