@@ -448,7 +448,10 @@ export function initIcaoControl({
   }
 
   query.addEventListener("input", () => {
-    if (onlineAbort) onlineAbort.abort(); // a new keystroke supersedes an online search
+    // A new keystroke supersedes any in-flight OR just-resolved online search:
+    // abort the request and bump the seq so a late response is discarded.
+    if (onlineAbort) onlineAbort.abort();
+    onlineSeq++;
     runSearch(query.value);
   });
 
@@ -458,6 +461,7 @@ export function initIcaoControl({
   async function runOnlineSearch() {
     const q = query.value.trim();
     if (!q) {
+      renderResults([]); // clear any stale results before prompting
       setStatus("Type a place, ZIP, or airport, then tap Online.");
       return;
     }

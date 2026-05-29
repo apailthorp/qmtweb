@@ -71,7 +71,8 @@ function gemini_intent(string $q): ?array {
         'contents'         => [['parts' => [['text' => $prompt]]]],
         'generationConfig' => ['responseMimeType' => 'application/json', 'temperature' => 0],
     ];
-    $url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key='
+    // Model is configurable; verify the current free-tier model when wiring the key.
+    $url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key='
         . rawurlencode($key);
 
     $resp = http_post_json($url, $payload);
@@ -82,9 +83,14 @@ function gemini_intent(string $q): ?array {
     if (!is_array($intent)) return null;
 
     $zip = (string) ($intent['zip'] ?? '');
+    $zip = preg_match('/^\d{5}$/', $zip) ? $zip : null;
+    $place = !empty($intent['place']) ? (string) $intent['place'] : null;
+    // Nothing usable extracted → return null so the caller falls back to the
+    // Tier-1 deterministic parser instead of dead-ending on an empty intent.
+    if ($zip === null && $place === null) return null;
     return [
-        'zip'   => preg_match('/^\d{5}$/', $zip) ? $zip : null,
-        'place' => !empty($intent['place']) ? (string) $intent['place'] : null,
+        'zip'   => $zip,
+        'place' => $place,
         'count' => (int) ($intent['count'] ?? NEAREST_DEFAULT),
     ];
 }
