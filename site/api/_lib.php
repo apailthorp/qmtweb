@@ -89,6 +89,27 @@ function _cache_path(string $key): string {
     return $dir . '/' . sha1($key) . '.json';
 }
 
+// Read a server-side secret (e.g. GEMINI_API_KEY) without ever shipping it in
+// the repo or exposing it over HTTP. Resolution order:
+//   1. process env  — getenv() (cPanel "Environment Variables", LiteSpeed, CLI)
+//   2. $_SERVER      — e.g. an .htaccess `SetEnv NAME value`
+//   3. a PHP config file ONE LEVEL ABOVE the web root: ../qmtweb-secrets.php,
+//      returning ['NAME' => 'value', ...]. That dir is outside public_html (not
+//      web-accessible) and outside the deploy's source (site/ → public_html),
+//      so the key survives every deploy and is never committed.
+function server_secret(string $name): ?string {
+    $env = getenv($name);
+    if ($env !== false && $env !== '') return $env;
+    if (!empty($_SERVER[$name])) return (string) $_SERVER[$name];
+
+    static $file = null;
+    if ($file === null) {
+        $loaded = @include __DIR__ . '/../../qmtweb-secrets.php';
+        $file = is_array($loaded) ? $loaded : [];
+    }
+    return !empty($file[$name]) ? (string) $file[$name] : null;
+}
+
 // Geocode a 5-digit US ZIP (zippopotam) or a place name (Nominatim) to
 // { lat, lon, label }. Cached aggressively (locations are stable; Nominatim
 // fair-use). Returns null if nothing matched.

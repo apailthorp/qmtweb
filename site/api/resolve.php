@@ -58,7 +58,7 @@ function deterministic_intent(string $q): array {
 // Returns null (→ Tier 1) when no key, error, or unparseable. NEVER returns a
 // station — only the location to feed the grounded pipeline.
 function gemini_intent(string $q): ?array {
-    $key = getenv('GEMINI_API_KEY') ?: ($_SERVER['GEMINI_API_KEY'] ?? null);
+    $key = server_secret('GEMINI_API_KEY');
     if (!$key) return null;
 
     $prompt = 'You extract the LOCATION a weather query is about. Return ONLY JSON '

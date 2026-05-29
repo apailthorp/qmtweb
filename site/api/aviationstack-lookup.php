@@ -8,7 +8,7 @@
 declare(strict_types=1);
 require __DIR__ . '/_lib.php';
 
-$key = getenv('AVIATIONSTACK_KEY') ?: ($_SERVER['AVIATIONSTACK_KEY'] ?? null);
+$key = server_secret('AVIATIONSTACK_KEY');
 if (!$key) {
     json_err('AviationStack lookup is not configured.', 503);
 }
