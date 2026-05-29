@@ -9,6 +9,10 @@
 
 declare(strict_types=1);
 
+// JSON endpoints must never let PHP notices/warnings into the response body —
+// they'd corrupt the JSON for the client. Errors still hit the server log.
+ini_set('display_errors', '0');
+
 const HTTP_TIMEOUT = 5;  // seconds per upstream call
 const USER_AGENT   = 'qmtweb/1.x (+https://pailthorp.net; METAR station lookup)';
 
@@ -38,7 +42,9 @@ function http_get_json(string $url, array $headers = [], int $timeout = HTTP_TIM
     ]);
     $body = curl_exec($ch);
     $code = curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-    curl_close($ch);
+    // curl_close($ch) intentionally omitted: it has been a no-op since PHP 8.0
+    // (the handle is released when $ch goes out of scope) and was deprecated in
+    // PHP 8.5, where the call itself emits a notice that would corrupt JSON.
     if ($body === false || $code < 200 || $code >= 300) return null;
     $data = json_decode((string) $body, true);
     return is_array($data) ? $data : null;
@@ -58,7 +64,9 @@ function http_post_json(string $url, array $payload, array $headers = [], int $t
     ]);
     $body = curl_exec($ch);
     $code = curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-    curl_close($ch);
+    // curl_close($ch) intentionally omitted: it has been a no-op since PHP 8.0
+    // (the handle is released when $ch goes out of scope) and was deprecated in
+    // PHP 8.5, where the call itself emits a notice that would corrupt JSON.
     if ($body === false || $code < 200 || $code >= 300) return null;
     $data = json_decode((string) $body, true);
     return is_array($data) ? $data : null;
