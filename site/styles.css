@@ -251,16 +251,6 @@ button:hover {
   font-size: 0.9rem;
 }
 
-.ids-row {
-  display: flex;
-  align-items: stretch;
-  gap: 0.4rem;
-}
-
-.ids-row input[type="text"] {
-  flex: 1;
-}
-
 .manage-toggle {
   flex-shrink: 0;
   background: #fff;
@@ -292,35 +282,9 @@ button:hover {
   flex-shrink: 0;
 }
 
-.manage-panel {
-  margin-top: 0.5rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: #fcfcfc;
-  padding: 0.5rem 0;
-}
-
-.manage-panel[hidden] { display: none; }
-
 .icao-count {
   color: var(--fg-muted);
   font-size: 0.75rem;
-}
-
-.manage-search {
-  display: flex;
-  gap: 0.4rem;
-  padding: 0 0.75rem 0.25rem;
-}
-
-.manage-search input[type="search"] {
-  flex: 1;
-  /* 16px keeps iOS Safari/WebKit (incl. Brave on iOS) from auto-zooming
-   * on focus — fields below 16px trigger the zoom. */
-  font-size: 16px;
-  padding: 0.4rem 0.6rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
 }
 
 .icao-search-external {
@@ -343,15 +307,6 @@ button:hover {
 .icao-search-external:disabled {
   opacity: 0.5;
   cursor: not-allowed;
-}
-
-.icao-grid {
-  padding: 0.25rem 0.75rem 0.5rem;
-  margin: 0;
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
 }
 
 .visually-hidden {
@@ -437,119 +392,6 @@ button:hover {
   color: var(--fg-muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
-}
-
-.icao-row {
-  display: flex;
-  align-items: center;
-  gap: 0;                       /* no dead pixels between adjacent hit-zones */
-  font-size: 0.9rem;
-  margin: 0;
-  padding: 0.25rem 0.25rem;
-  border-radius: 3px;
-  min-height: 2.25rem;
-  cursor: default;              /* explicit, so gap transitions are deterministic */
-}
-
-.icao-row:hover {
-  background: #f4f7fb;
-}
-
-.icao-row.dragging {
-  opacity: 0.4;
-}
-
-.icao-row.drop-before { box-shadow: inset 0 2px 0 0 var(--accent); }
-.icao-row.drop-after  { box-shadow: inset 0 -2px 0 0 var(--accent); }
-
-.icao-row > .drag-handle {
-  flex-shrink: 0;
-  width: 1.75rem;
-  align-self: stretch;        /* grab zone spans the full row height */
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--fg-muted);
-  cursor: grab;
-  user-select: none;
-  font-size: 1rem;
-  line-height: 1;
-  border-radius: 3px;
-  overflow: hidden;           /* the dot glyph can't spill past the grab box */
-}
-
-.icao-row > .drag-handle:hover { background: #fff; color: var(--fg); }
-
-.icao-row.dragging > .drag-handle,
-.icao-row > .drag-handle:active {
-  cursor: grabbing;
-}
-
-.icao-row > label {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  cursor: pointer;
-  margin: 0;
-  min-width: 0;
-  padding: 0.3rem 0.5rem;  /* horizontal padding fills the old flex gap */
-}
-
-.icao-row > label > span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.icao-row input[type="checkbox"] {
-  margin: 0;
-  flex-shrink: 0;
-  width: 1.1rem;
-  height: 1.1rem;
-}
-
-.icao-row-controls {
-  display: flex;
-  gap: 0;                /* buttons touch — pointer stays pointer across the cluster */
-  flex-shrink: 0;
-  cursor: pointer;       /* parent matches children so 1-px boundary gaps don't flash */
-}
-
-.icao-row-controls button {
-  background: transparent;
-  border: none;
-  color: var(--fg-muted);
-  font-size: 0.95rem;
-  line-height: 1;
-  cursor: pointer;
-  padding: 0;
-  border-radius: 3px;
-  min-width: 1.5rem;   /* 24px — WCAG AA target floor, ~25% narrower than before */
-  min-height: 1.9rem;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.icao-row-controls button:hover:not(:disabled) {
-  color: var(--fg);
-  background: #fff;
-}
-
-.icao-row-controls button:disabled {
-  opacity: 0.3;
-  cursor: not-allowed;
-}
-
-.icao-row-controls .icao-remove {
-  font-size: 1.25rem;
-  font-weight: 700;
-}
-
-.icao-row-controls .icao-remove:hover:not(:disabled) {
-  color: var(--error);
-  background: #fff;
 }
 
 .icao-actions {

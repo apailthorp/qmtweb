@@ -57,21 +57,29 @@ export function initIcaoControl({
 
   const lookupByIcao = new Map();
   let dataset = null;
-  let datasetLoading = false;
+  let datasetPromise = null;
 
+  // Cache the in-flight load so concurrent callers (e.g. fast keystrokes) all
+  // await the SAME promise and receive the real dataset. Returning early while a
+  // load was in flight used to hand back a still-null dataset, making the first
+  // search wrongly report "unavailable".
   async function ensureDataset() {
-    if (dataset || datasetLoading) return dataset;
-    datasetLoading = true;
-    try {
-      dataset = await loadAirports();
-      for (const a of dataset) lookupByIcao.set(a.icao, a);
-      renderTiles(); // names resolve once the dataset is in
-    } catch {
-      // Search just stays unavailable; typing ICAOs still works.
-    } finally {
-      datasetLoading = false;
+    if (dataset) return dataset;
+    if (!datasetPromise) {
+      datasetPromise = (async () => {
+        try {
+          const data = await loadAirports();
+          dataset = data;
+          for (const a of data) lookupByIcao.set(a.icao, a);
+          renderTiles(); // names resolve once the dataset is in
+          return data;
+        } catch {
+          datasetPromise = null; // allow a later retry
+          return null;
+        }
+      })();
     }
-    return dataset;
+    return datasetPromise;
   }
 
   // --- Model mutations ---
@@ -221,9 +229,33 @@ export function initIcaoControl({
   }
 
   function renderTiles() {
+    // commit() re-renders on every toggle/reorder/remove, which would drop
+    // keyboard focus when the DOM is rebuilt. Capture the focused control's
+    // identity and restore focus to its rebuilt equivalent — falling back to the
+    // same tile's pill when a reorder leaves the pressed arrow disabled.
+    const active = document.activeElement;
+    let sel = null;
+    let focusedIcao = null;
+    if (active && tiles.contains(active)) {
+      focusedIcao = active.closest(".tile")?.dataset.icao ?? null;
+      if (active.dataset.toggleIcao) {
+        sel = `[data-toggle-icao='${active.dataset.toggleIcao}']`;
+      } else if (active.dataset.moveIcao) {
+        sel = `[data-move-icao='${active.dataset.moveIcao}'][data-direction='${active.dataset.direction}']`;
+      } else if (active.dataset.removeIcao) {
+        sel = `[data-remove-icao='${active.dataset.removeIcao}']`;
+      }
+    }
+
     tiles.innerHTML = "";
     list.forEach((icao, i) => tiles.append(makeTile(icao, i)));
     updateCount();
+
+    if (sel) {
+      const match = tiles.querySelector(sel);
+      if (match && !match.disabled) match.focus();
+      else if (focusedIcao) tiles.querySelector(`[data-toggle-icao='${focusedIcao}']`)?.focus();
+    }
   }
 
   // --- Expand / collapse ---

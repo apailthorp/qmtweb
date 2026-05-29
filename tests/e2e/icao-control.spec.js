@@ -100,6 +100,14 @@ test.describe("ICAO tiles — activate / hide + actions", () => {
     expect(await idsCodes(page)).not.toContain("KSEA");
   });
 
+  test("keyboard toggle keeps focus on the tile (focus survives re-render)", async ({ page }) => {
+    const check = page.locator(toggle("KSEA"));
+    await check.focus();
+    await page.keyboard.press("Space"); // toggles → commit() rebuilds the tiles
+    await expect(check).toBeFocused();
+    await expect(page.locator(tile("KSEA"))).toHaveClass(/\bis-active\b/);
+  });
+
   test("All / None / Restore defaults", async ({ page }) => {
     await page.locator("button[data-action='select-all']").click();
     await expect(page.locator("#icao-count")).toContainText("(12/12)");
