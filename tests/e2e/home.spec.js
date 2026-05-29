@@ -149,8 +149,12 @@ test.describe("pailthorp.net home page", () => {
     await expect(page.locator("button[name='taf'][value='1']")).toBeDisabled();
   });
 
-  test("invalid ICAOs surface an inline error and block submission", async ({ page }) => {
-    await page.locator("#ids").fill("BAD,KBFI");
+  test("an empty selection blocks submission with an inline error", async ({ page }) => {
+    // The tile control only ever puts valid ICAOs in the hidden #ids, so the
+    // sole error path is submitting with nothing selected.
+    await page.locator("#manage-toggle").click();
+    await page.locator("button[data-action='select-none']").click();
+    await expect(page.locator("#icao-count")).toContainText("(0/12)");
 
     // Capture navigation attempts; if validation blocks, no nav happens.
     let navigated = false;
@@ -160,16 +164,17 @@ test.describe("pailthorp.net home page", () => {
 
     await page.locator("button[name='taf'][value='0']").click();
     await expect(page.locator("#form-error")).toBeVisible();
-    await expect(page.locator("#form-error")).toContainText(/BAD/);
+    await expect(page.locator("#form-error")).toContainText(/add at least one/i);
     expect(navigated).toBe(false);
   });
 
-  test("editing the ICAO field clears a prior error", async ({ page }) => {
-    await page.locator("#ids").fill("BAD");
+  test("typing in the query clears a prior error", async ({ page }) => {
+    await page.locator("#manage-toggle").click();
+    await page.locator("button[data-action='select-none']").click();
     await page.locator("button[name='taf'][value='0']").click();
     await expect(page.locator("#form-error")).toBeVisible();
 
-    await page.locator("#ids").fill("KPAE");
+    await page.locator("#icao-query").fill("K");
     await expect(page.locator("#form-error")).toBeHidden();
   });
 });
