@@ -24,6 +24,28 @@ async function tileOrder(page) {
 const tile = (icao) => `.tile[data-icao='${icao}']`;
 const toggle = (icao) => `[data-toggle-icao='${icao}']`;
 
+// Deterministic native HTML5 DnD: dispatch dragstart/dragover/drop with a real
+// DataTransfer and a clientY in the target's upper or lower half. (Playwright's
+// dragTo emulates mouse moves that don't reliably fire native drag events.)
+async function dndReorder(page, srcIcao, dstIcao, half) {
+  await page.evaluate(({ srcIcao, dstIcao, half }) => {
+    const src = document.querySelector(`.tile[data-icao='${srcIcao}']`);
+    const dst = document.querySelector(`.tile[data-icao='${dstIcao}']`);
+    const r = dst.getBoundingClientRect();
+    const clientX = r.left + r.width / 2;
+    const clientY = half === "upper" ? r.top + 2 : r.bottom - 2;
+    const dataTransfer = new DataTransfer();
+    const fire = (el, type) =>
+      el.dispatchEvent(
+        new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer, clientX, clientY }),
+      );
+    fire(src, "dragstart");
+    fire(dst, "dragover");
+    fire(dst, "drop");
+    fire(src, "dragend");
+  }, { srcIcao, dstIcao, half });
+}
+
 test.describe("ICAO tiles — collapsed defaults", () => {
   test.beforeEach(async ({ page }) => {
     await page.goto("/");
@@ -250,6 +272,17 @@ test.describe("ICAO tiles — local autocomplete search", () => {
     await expect(btn).toContainText(/active/i);
   });
 
+  test("a listed-but-inactive airport shows 'reactivate' and re-activates it", async ({ page }) => {
+    // KSEA is in the default list but not selected, so it can be re-activated.
+    await page.locator("#icao-query").fill("KSEA");
+    const btn = page.locator("#icao-search-results button[data-add-icao='KSEA']");
+    await expect(btn).toBeVisible({ timeout: 10_000 });
+    await expect(btn).toBeEnabled();
+    await expect(btn).toContainText(/reactivate/i);
+    await btn.click();
+    await expect(page.locator(tile("KSEA"))).toHaveClass(/\bis-active\b/);
+  });
+
   test("at LIST_MAX (20) the result is disabled with a 'list full' hint", async ({ page }) => {
     const q = page.locator("#icao-query");
     const extras = ["KSFO", "KLAX", "KJFK", "KORD", "KDFW", "KATL", "KDEN", "KPHX"];
@@ -280,25 +313,16 @@ test.describe("ICAO tiles — drag and drop reorder", () => {
   });
 
   test("dropping in the lower half of a later tile inserts after it", async ({ page }) => {
-    const src = page.locator(tile("KPAE"));
-    const dst = page.locator(tile("KRNT"));
-    const box = await dst.boundingBox();
-    await src.dragTo(dst, { targetPosition: { x: box.width / 2, y: box.height - 4 } });
-
+    await dndReorder(page, "KPAE", "KRNT", "lower");
     const order = await tileOrder(page);
     expect(order.indexOf("KPAE")).toBeGreaterThan(order.indexOf("KRNT"));
   });
 
   test("dropping in the upper half of an earlier tile inserts before it", async ({ page }) => {
-    // Short, near-the-top drag (KPWT idx 3 → KBFI idx 1) — long synthetic
-    // native-DnD drags don't register reliably.
-    const src = page.locator(tile("KPWT"));
-    const dst = page.locator(tile("KBFI"));
-    const box = await dst.boundingBox();
-    await src.dragTo(dst, { targetPosition: { x: box.width / 2, y: 4 } });
-
+    // Long reorder (KORS idx 11 → KBFI idx 1) — reliable now via native dispatch.
+    await dndReorder(page, "KORS", "KBFI", "upper");
     const order = await tileOrder(page);
-    expect(order.indexOf("KPWT")).toBeLessThan(order.indexOf("KBFI"));
+    expect(order.indexOf("KORS")).toBeLessThan(order.indexOf("KBFI"));
   });
 });
 

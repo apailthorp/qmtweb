@@ -351,8 +351,12 @@ export function initIcaoControl({
       btn.type = "button";
       btn.className = "icao-result";
       btn.dataset.addIcao = a.icao;
-      const inList = list.includes(a.icao) && selected.includes(a.icao);
-      btn.disabled = (inList) || full;
+      // Reactivating an already-listed airport doesn't consume a list slot, so
+      // only block it when it's already active, or when the list is full AND
+      // this airport isn't already in it.
+      const isListed = list.includes(a.icao);
+      const isSelected = selected.includes(a.icao);
+      btn.disabled = isSelected || (full && !isListed);
 
       const codeSpan = document.createElement("span");
       codeSpan.className = "icao-result-code";
@@ -370,7 +374,7 @@ export function initIcaoControl({
         `${a.name}${a.city ? `, ${a.city}` : ""}${a.country ? ` (${a.country})` : ""}`;
       const hintSpan = document.createElement("span");
       hintSpan.className = "icao-result-hint";
-      hintSpan.textContent = inList ? "active" : full ? "list full" : "add";
+      hintSpan.textContent = isSelected ? "active" : isListed ? "reactivate" : full ? "list full" : "add";
 
       btn.append(codeSpan, nameSpan, hintSpan);
       item.append(btn);
