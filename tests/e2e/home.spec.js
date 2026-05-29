@@ -25,16 +25,20 @@ test.describe("pailthorp.net home page", () => {
   });
 
   test("version stamp hides when the manage panel expands the page past the viewport", async ({ page }) => {
-    // Viewport tall enough that the collapsed page fits (not scrollable → shown),
-    // but short enough that expanding the manage panel overflows it (scrollable).
-    await page.setViewportSize({ width: 1280, height: 1100 });
-    const stamp = page.locator("#app-version");
-    await expect(stamp).not.toHaveClass(/\bis-hidden\b/); // collapsed: shown
+    // Measure the collapsed content height at a short viewport (so scrollHeight
+    // reflects content, not the viewport), then size the viewport just above it.
+    // Deterministic across fonts/environments — no hard-coded pixel height.
+    await page.setViewportSize({ width: 1280, height: 400 });
+    const collapsedH = await page.evaluate(() => document.documentElement.scrollHeight);
+    await page.setViewportSize({ width: 1280, height: collapsedH + 60 });
 
-    // Expanding the panel grows the document with no scroll/resize event — only a
+    const stamp = page.locator("#app-version");
+    await expect(stamp).not.toHaveClass(/\bis-hidden\b/); // collapsed fits → shown
+
+    // Expanding grows the document with no scroll/resize event — only a
     // ResizeObserver recompute hides the now-floating tag (we're still at top).
     await page.locator("#manage-toggle").click();
-    await expect(stamp).toHaveClass(/\bis-hidden\b/); // expanded + at top: hidden
+    await expect(stamp).toHaveClass(/\bis-hidden\b/); // expanded overflows → hidden
   });
 
   test("KING 5 radar grid has all 16 links pointing at the tegna-media CDN", async ({ page }) => {
