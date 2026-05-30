@@ -21,7 +21,12 @@ if ($q === '') json_err('Type a place, ZIP, or airport to search online.', 422);
 // ones like "WA" (state vs. country code) or "King County" (TX vs. WA).
 $intent     = gemini_intent($q) ?? deterministic_intent($q);
 $count      = max(1, min(10, (int) ($intent['count'] ?? NEAREST_DEFAULT)));
-$candidates = is_array($intent['candidates'] ?? null) ? $intent['candidates'] : [];
+// Cap server-side regardless of what the LLM returned, so a malformed or
+// malicious Gemini response can't trigger an unbounded fan-out of geocode +
+// aviationweather.gov calls. Matches the documented 2-3 candidate contract.
+$candidates = is_array($intent['candidates'] ?? null)
+    ? array_slice($intent['candidates'], 0, 3)
+    : [];
 
 // Geocode each candidate, collect the nearest stations per location into a
 // group. Silently drop candidates that don't geocode or have no reporters.
@@ -29,8 +34,12 @@ $groups = [];
 foreach ($candidates as $candidate) {
     if (!is_array($candidate)) continue;
     $location = null;
-    if (!empty($candidate['zip']))        $location = geocode_place((string) $candidate['zip']);
-    elseif (!empty($candidate['place']))  $location = geocode_place((string) $candidate['place']);
+    if (!empty($candidate['zip'])) $location = geocode_place((string) $candidate['zip']);
+    // If the ZIP geocode returned nothing (or there was no ZIP), fall through
+    // to the place name so the candidate still has a chance to resolve.
+    if ($location === null && !empty($candidate['place'])) {
+        $location = geocode_place((string) $candidate['place']);
+    }
     if ($location === null) continue;
     $stations = nearest_metar_stations($location['lat'], $location['lon'], $count);
     if (!$stations) continue;

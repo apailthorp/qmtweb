@@ -18,7 +18,7 @@ share the same `resolve.php` endpoint.
 
 ## Data flow (one Online ↗ click)
 
-```
+```text
        ┌─ Tier 2: Gemini ──────────────────┐
 query ─┤                                   ├──► candidates: [{zip?, place?}, …]
        └─ Tier 1: deterministic intent ────┘    (multiple when ambiguous: "King County" → WA + TX)

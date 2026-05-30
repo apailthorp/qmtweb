@@ -57,12 +57,23 @@ if (tafToggle)     tafToggle.checked     = savedQuery.taf;
 //   Decoded ⊕ Tabular  (output format is one or the other)
 //   Tabular ⊕ TAF      (the tabular view can't carry a TAF)
 // Defensive guard in case storage somehow holds an illegal combination.
-if (decodedToggle?.checked && tabularToggle?.checked) tabularToggle.checked = false;
-if (tabularToggle?.checked && tafToggle?.checked)     tafToggle.checked     = false;
+let mutexRepaired = false;
+if (decodedToggle?.checked && tabularToggle?.checked) {
+  tabularToggle.checked = false;
+  mutexRepaired = true;
+}
+if (tabularToggle?.checked && tafToggle?.checked) {
+  tafToggle.checked = false;
+  mutexRepaired = true;
+}
 if (hoursSelect) {
   const hasOption = Array.from(hoursSelect.options).some((o) => o.value === savedQuery.hours);
   if (hasOption) hoursSelect.value = savedQuery.hours;
 }
+
+// Persist the repaired state so storage self-heals — otherwise we'd repeat
+// the defensive fix on every page load.
+if (mutexRepaired) saveQuery();
 
 function saveQuery() {
   queryStore.save({

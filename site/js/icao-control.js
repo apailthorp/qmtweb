@@ -500,9 +500,14 @@ export function initIcaoControl({
   query.addEventListener("input", () => {
     // A new keystroke supersedes any in-flight OR just-resolved online search:
     // abort the request and bump the seq so a late response is discarded.
+    // Also clear the Online button's busy visuals — runOnlineSearch's
+    // finally{} only clears if seq===onlineSeq, which is no longer true after
+    // we bump it here, so stale .is-loading would otherwise persist.
     if (onlineAbort) {
       onlineAbort.abort();
       onlineAbort = null;
+      onlineBtn?.classList.remove("is-loading");
+      onlineBtn?.removeAttribute("aria-busy");
     }
     onlineSeq++;
     // Editing always clears any prior loading/not-found/error indicator so the
@@ -573,15 +578,20 @@ export function initIcaoControl({
         );
         return;
       }
+      // Filter to groups that actually have stations BEFORE we render or
+      // compute the status — otherwise an empty-station group inflates
+      // groups.length and the "Multiple matches (N)" copy desyncs with the
+      // visibly-rendered N. The server currently drops empty groups too, but
+      // we belt-and-suspender it here in case that contract slips.
       const groups = Array.isArray(data.groups) ? data.groups : [];
-      renderOnlineGroups(groups);
-      const totalStations = groups.reduce((n, g) => n + (g.stations?.length ?? 0), 0);
-      if (totalStations === 0) {
+      const nonEmpty = groups.filter((g) => Array.isArray(g.stations) && g.stations.length);
+      renderOnlineGroups(nonEmpty);
+      if (nonEmpty.length === 0) {
         setStatus("No nearby reporting stations found.", "notfound");
-      } else if (groups.length === 1) {
-        setStatus(groups[0].interpreted ?? "");
+      } else if (nonEmpty.length === 1) {
+        setStatus(nonEmpty[0].interpreted ?? "");
       } else {
-        setStatus(`Multiple matches (${groups.length}) — pick one`);
+        setStatus(`Multiple matches (${nonEmpty.length}) — pick one`);
       }
     } catch (err) {
       if (err?.name === "AbortError") return;
@@ -652,9 +662,12 @@ export function initIcaoControl({
       updateClearButton();
       // If runOnlineSearch auto-expanded us from collapsed, snap back now
       // that the user has made a selection — they didn't ask for edit mode.
+      // Move focus to the Edit toggle so keyboard users keep an explicit
+      // focus target (otherwise focus falls back to <body> on collapse).
       if (expandedForOnline) {
         expandedForOnline = false;
         setOpen(false);
+        manageToggle?.focus({ preventScroll: true });
       } else {
         query.focus();
       }
