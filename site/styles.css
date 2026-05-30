@@ -662,7 +662,14 @@ footer {
 
 @media (max-width: 480px) {
   main {
-    padding: 1rem 0.75rem 2rem;
+    /* Tighter horizontal padding + a bit more bottom room than the base rule,
+       but keep the safe-area-inset envelope so notched phones don't lose
+       their inset protection. Mirrors the base main padding shape. */
+    padding:
+      calc(env(safe-area-inset-top, 0px) + 1rem)
+      max(env(safe-area-inset-right, 0px), 0.75rem)
+      calc(env(safe-area-inset-bottom, 0px) + 2rem)
+      max(env(safe-area-inset-left, 0px), 0.75rem);
   }
 }
 
