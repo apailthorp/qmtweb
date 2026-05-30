@@ -12,6 +12,9 @@
 
 * {
   box-sizing: border-box;
+  /* Kill iOS Safari's translucent tap overlay; it persists on borderless
+     buttons like Edit and reads as a stuck dark-blue selection. */
+  -webkit-tap-highlight-color: transparent;
 }
 
 html, body {
@@ -45,8 +48,8 @@ header h1 {
 }
 
 section {
-  margin: 0.75rem 0;
-  padding: 0.75rem;
+  margin: 0.4rem 0;        /* was 0.75rem — tighten the gap between sections */
+  padding: 0.5rem 0.75rem; /* keep horizontal padding, halve the vertical breathing room */
   background: #fff;
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -65,9 +68,15 @@ a {
   text-decoration: none;
 }
 
-a:hover, a:focus {
+a:focus {
   color: var(--accent-hover);
   text-decoration: underline;
+}
+@media (hover: hover) {
+  a:hover {
+    color: var(--accent-hover);
+    text-decoration: underline;
+  }
 }
 
 /* KING 5 radar/satellite links — 4×4 grid matching king5.com/radar order,
@@ -114,18 +123,18 @@ form input[type="text"] {
 }
 
 .form-controls {
-  margin-top: 0.75rem;
+  margin-top: 0.3rem;     /* tight gap to the search/tile box above */
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.3rem;            /* tighter so Hrs + Decode + Tabular + TAF + METAR fit a phone row */
   font-size: 0.9rem;
 }
 
 .ctrl-group {
   display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
+  gap: 0.25rem;
   white-space: nowrap;
   margin: 0;
 }
@@ -133,7 +142,7 @@ form input[type="text"] {
 .ctrl-group label {
   display: inline-flex;
   align-items: center;
-  gap: 0.25rem;
+  gap: 0.2rem;
   margin: 0;
 }
 
@@ -199,10 +208,10 @@ form input[type="text"] {
   outline-offset: 2px;
 }
 
-/* Decode + Tabular stay together — they wrap as one unit instead of
+/* Decode + Tabular + TAF stay together — they wrap as one unit instead of
  * splitting across lines at narrow widths (e.g. 344px Z Fold). */
 .format-toggles {
-  gap: 0.6rem;
+  gap: 0.4rem;
   flex-wrap: nowrap;
 }
 
@@ -240,9 +249,11 @@ button {
   cursor: pointer;
 }
 
-button:hover {
-  background: var(--accent-hover);
-  border-color: var(--accent-hover);
+@media (hover: hover) {
+  button:hover {
+    background: var(--accent-hover);
+    border-color: var(--accent-hover);
+  }
 }
 
 .error {
@@ -251,31 +262,45 @@ button:hover {
   font-size: 0.9rem;
 }
 
+/* Label row holds "Airports (N/M)" on the left and the Edit icon button on
+   the right, ABOVE the tile box. That frees the tile box of any Edit-related
+   padding reservation so tiles can fill the whole row width. The padding-
+   right matches the tile-box's border + padding-right so Edit's right edge
+   visually aligns with the magnifier's right edge inside the box. */
+.ids-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  /* Cancel the airports-box's right padding (0.4rem) on this row so Edit's
+     right edge reaches the box's inner border — the same horizontal stop the
+     magnifier hits inside the query-wrap below. */
+  margin: 0 -0.4rem 0.2rem 0;
+  padding-right: 0;
+}
+
+/* Edit toggle is a bare icon — no border, no background, just the glyph.
+   Hover affordance is a colour change rather than a box.
+   margin-top removed: with no border, the icon's centred position naturally
+   sits at the visual midline of "Airports" rather than 4 px below it. */
 .manage-toggle {
   flex-shrink: 0;
-  background: #fff;
-  color: var(--fg);
-  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg-muted);
+  border: none;
   font: inherit;
-  font-size: 0.8rem;
-  padding: 0.25rem 0.5rem;
-  border-radius: var(--radius);
+  width: 1.9rem;
+  height: 1.9rem;
+  padding: 0;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
-  gap: 0.3rem;
-  white-space: nowrap;
+  justify-content: center;
 }
 
-.manage-toggle:hover { background: #f0f0f0; }
-.manage-toggle::before {
-  content: "▸";
-  display: inline-block;
-  font-size: 0.85em;
-  color: var(--fg-muted);
-  transition: transform 0.15s ease;
+@media (hover: hover) {
+  .manage-toggle:hover { color: var(--accent); }
 }
-.manage-toggle[aria-expanded="true"]::before { transform: rotate(90deg); }
 
 .manage-icon {
   display: block;
@@ -284,30 +309,124 @@ button:hover {
 
 .icao-count {
   color: var(--fg-muted);
-  font-size: 0.75rem;
+  font-size: 0.85rem;
+  font-weight: 400;
+  margin-left: 0.25rem;
 }
 
 .icao-search-external {
+  position: relative;        /* anchor for the in-flight spinner overlay */
   flex-shrink: 0;
-  background: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 2rem;
+  box-sizing: border-box;
+  background: transparent;
   color: var(--fg);
-  border: 1px solid var(--border);
+  border: 0;
+  border-radius: 0;          /* no own rounding — sits inside the wrap's box */
+  outline: 0;
+  appearance: none;
+  -webkit-appearance: none;
   font: inherit;
   font-size: 0.85rem;
-  padding: 0.4rem 0.7rem;
-  border-radius: var(--radius);
+  padding: 0 0.55rem;
   cursor: pointer;
   white-space: nowrap;
 }
+.icao-search-external-icon { display: block; }
 
-.icao-search-external:hover:not(:disabled) {
-  background: #f0f0f0;
+@media (hover: hover) {
+  .icao-search-external:hover:not(:disabled) { color: var(--accent); }
+}
+.icao-search-external:focus,
+.icao-search-external:focus-visible { outline: 0; }
+
+/* Focus indicator lives on the wrap so the whole search box highlights as
+   one unit, not the magnifier as a sub-box. */
+.tile-query-wrap:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
 }
 
 .icao-search-external:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+/* In-flight state: hide the magnifier icon, swap in the splat animation —
+   a 14-step Unicode glyph cycle modelled on the Claude Code "thinking"
+   spinner (the one in your CLI screen-recording).
+     *  →  ❋  →  ✹ ✹ ✹  →  ❋  →  ·  →  ✿ ✿ ✿ ✿  →  ❀ ❀  →  ·
+   Same glyph "held" across multiple frames mimics the observed sustains
+   on the big radial burst and the big flower. 14 spans · 1.4s · ~100ms
+   per frame. Coral colour pulled from the recording. */
+.icao-search-external.is-loading {
+  color: transparent;
+  pointer-events: none;       /* swallow repeat clicks during the fetch */
+}
+.icao-search-external .search-splat { display: none; }
+.icao-search-external.is-loading .search-splat {
+  display: block;
+  position: absolute;
+  inset: 0;
+}
+.icao-search-external.is-loading .search-splat > span {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  color: var(--accent);      /* qmtweb blue (same palette as the rest of the site) */
+  opacity: 0;
+  animation: search-splat-step 2.1s steps(1, end) infinite;
+}
+.icao-search-external .search-splat > span:nth-child(1)  { font-size: 14px; animation-delay: 0.00s; }
+.icao-search-external .search-splat > span:nth-child(2)  { font-size: 18px; animation-delay: 0.15s; }
+.icao-search-external .search-splat > span:nth-child(3)  { font-size: 22px; animation-delay: 0.30s; }
+.icao-search-external .search-splat > span:nth-child(4)  { font-size: 22px; animation-delay: 0.45s; }
+.icao-search-external .search-splat > span:nth-child(5)  { font-size: 22px; animation-delay: 0.60s; }
+.icao-search-external .search-splat > span:nth-child(6)  { font-size: 18px; animation-delay: 0.75s; }
+.icao-search-external .search-splat > span:nth-child(7)  { font-size: 10px; animation-delay: 0.90s; }
+.icao-search-external .search-splat > span:nth-child(8)  { font-size: 22px; animation-delay: 1.05s; }
+.icao-search-external .search-splat > span:nth-child(9)  { font-size: 22px; animation-delay: 1.20s; }
+.icao-search-external .search-splat > span:nth-child(10) { font-size: 22px; animation-delay: 1.35s; }
+.icao-search-external .search-splat > span:nth-child(11) { font-size: 22px; animation-delay: 1.50s; }
+.icao-search-external .search-splat > span:nth-child(12) { font-size: 18px; animation-delay: 1.65s; }
+.icao-search-external .search-splat > span:nth-child(13) { font-size: 18px; animation-delay: 1.80s; }
+.icao-search-external .search-splat > span:nth-child(14) { font-size: 10px; animation-delay: 1.95s; }
+@keyframes search-splat-step {
+  0%, 7%     { opacity: 1; }
+  7.2%, 100% { opacity: 0; }
+}
+
+/* Clear / cancel × button: lives between the query input and the Online
+   magnifier. Visible only when there's text OR a search is running. One
+   click aborts an in-flight search and clears the input + results. */
+.icao-query-clear {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 2rem;              /* match the row */
+  width: 1.5rem;
+  box-sizing: border-box;
+  background: transparent;
+  color: var(--fg-muted);
+  border: none;
+  padding: 0;
+  border-radius: 50%;
+  cursor: pointer;
+}
+@media (hover: hover) {
+  .icao-query-clear:hover {
+    color: var(--fg);
+    background: rgba(0, 0, 0, 0.06);
+  }
+}
+.icao-query-clear[hidden] { display: none; }
 
 .visually-hidden {
   position: absolute;
@@ -326,6 +445,53 @@ button:hover {
   font-size: 0.8rem;
   color: var(--fg-muted);
   min-height: 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.4em;
+}
+
+/* When the status has no message, collapse it so the tile-box doesn't
+   reserve a phantom row below the query line. The status only takes up
+   space when it actually has something to say (loading / not-found /
+   error / interpretation), which is when the layout shift is welcome. */
+.icao-search-status:empty {
+  display: none;
+  margin: 0;
+  min-height: 0;
+}
+
+/* Status sits as a direct child of .tile-control; the column flex layout
+   already gives it a full row, no extra rule needed. */
+
+/* Loading text colour (the spinner itself lives on the Online button — see
+   .icao-search-external.is-loading below — which is where the user just
+   clicked, so the in-flight cue is right next to the action). */
+.icao-search-status.is-loading {
+  color: var(--accent);
+  font-weight: 500;
+}
+
+/* Distinct indicators for "no result" vs. upstream failure. Both clear as
+   soon as the user edits the query (input handler resets state). */
+.icao-search-status.is-notfound {
+  color: var(--accent, #b85);
+}
+.icao-search-status.is-notfound::before {
+  content: "⊘";
+  font-weight: 600;
+}
+.icao-search-status.is-error {
+  color: var(--error, #c33);
+}
+.icao-search-status.is-error::before {
+  content: "⚠";
+  font-weight: 600;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .icao-search-external.is-loading .search-splat > span { animation: none; }
+  /* show just one shape statically so users still see "in flight" feedback */
+  .icao-search-external.is-loading .search-splat > span:nth-child(3) { opacity: 0.7; }
 }
 
 .icao-search-results {
@@ -363,9 +529,13 @@ button:hover {
   border-bottom: none;
 }
 
-.icao-result:hover:not(:disabled),
 .icao-result:focus-visible {
   background: #f4f7fb;
+}
+@media (hover: hover) {
+  .icao-result:hover:not(:disabled) {
+    background: #f4f7fb;
+  }
 }
 
 .icao-result:disabled {
@@ -398,6 +568,26 @@ button:hover {
  * from the bundled-local matches. */
 .icao-result-hint.icao-result-online { color: var(--accent); }
 
+/* Section divider in the Online results list when an ambiguous query (e.g.
+   "Springfield", "King County") resolves to multiple locations — one header
+   per group, hidden when only a single group is present. */
+.icao-result-group-header {
+  list-style: none;
+  margin: 0;
+  padding: 0.45rem 0.6rem 0.25rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--fg-muted);
+  background: #f5f7fa;
+  border-bottom: 1px solid var(--border);
+}
+.icao-result-group-header + .icao-result-group-header { display: none; }
+.icao-search-results > .icao-result-group-header:not(:first-child) {
+  border-top: 1px solid var(--border);
+  margin-top: 0.25rem;
+}
+
 .icao-actions {
   display: flex;
   flex-wrap: wrap;
@@ -415,9 +605,11 @@ button:hover {
   padding: 0.3rem 0.6rem;
 }
 
-.icao-actions button:hover {
-  background: #f0f0f0;
-  border-color: var(--border);
+@media (hover: hover) {
+  .icao-actions button:hover {
+    background: #f0f0f0;
+    border-color: var(--border);
+  }
 }
 
 .icao-hint {
@@ -472,32 +664,49 @@ footer {
 /* --- Tokenized tile control (prototype) --- */
 /* One full-width box: chips flow and wrap, then the query + manage toggle ride
  * on the input's line so there's no dead column to the right of wrapped chips. */
-.tile-box {
+/* Tile-control is the outer container holding two visible boxes (the airports
+   box and the query-wrap box) and the search dropdown / status / actions /
+   hint. Stacked vertically with a tight gap. In expanded mode the ordering
+   shifts so the query line rises to the top. */
+.tile-control {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
+  flex-direction: column;
   gap: 0.3rem;
-  padding: 0.3rem 0.4rem;
+}
+
+/* Airports box: contains the "Airports (N/M)" label + Edit + the tile chips.
+   This is the box you see around the airports area at the top. */
+.airports-box {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: #fff;
-  min-height: 2.4rem;
-  transition: background 0.15s ease;
+  padding: 0.2rem 0.4rem 0.3rem;   /* tighter top — the label-row doesn't need the breathing room */
 }
 
-.tile-control.is-open .tile-box {
-  flex-direction: column;
-  align-items: stretch;
+/* The form-wide rule (form label { margin-top: 0.75rem }) was pushing this
+   label ~12px down inside the airports-box; reset it so the label-row sits
+   right at the top edge. */
+#ids-label {
+  margin-top: 0;
+  display: inline-flex;
+  align-items: baseline;
   gap: 0.25rem;
+}
+
+.tile-control.is-open .airports-box {
   background: #fcfcfc;
 }
 
-/* The <ol> dissolves so its <li> tiles flow as flex children of .tile-box. */
+/* Tiles container: now an explicit flex-wrap row (was display:contents when
+   it dissolved into the old .tile-box). */
 .tiles {
-  display: contents;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
   margin: 0;
   padding: 0;
   list-style: none;
+  min-height: 2rem;     /* keep the box from collapsing when empty mid-edit */
 }
 
 /* Query + Online live together so they can sit inline (collapsed) or as the
@@ -509,37 +718,58 @@ footer {
  * explicit min-width here; that overrides the min-content floor and reintroduces
  * the overflow. */
 .tile-query-wrap {
+  /* The single box: input + clear (×) + magnifier all share this border.
+     The individual buttons inside are borderless so the visual unit reads
+     as one search field with its action icons. */
   display: flex;
   align-items: center;
   gap: 0.3rem;
-  flex: 1 1 0;
+  flex: 0 0 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: #fff;
 }
 
-.tile-control.is-open .tile-query-wrap {
-  order: -2;            /* jump above the tiles when expanded */
-  flex: 0 0 auto;       /* natural height in the column layout (full width via stretch) */
-}
+/* (Reclaim hack removed — Edit is no longer inside the tile-box, so the
+   tile-box has symmetric padding and the query row naturally spans full
+   width without negative margin trickery.) */
 
 /* Autocomplete results sit on their own full-width line directly under the
  * query — order -1 puts them above the tiles when expanded; collapsed they
  * naturally fall below the chips/query. */
-.tile-box .icao-search-results { flex: 0 0 100%; width: 100%; }
+/* Results dropdown takes its full row naturally as a direct child of
+   .tile-control (which is flex-column). */
+
+/* Expanded-mode reorder so the search context sits together at the top of the
+   box — query line → status → results → tile list. Otherwise a long tile list
+   pushes the search results (and the "couldn't work out a location" message)
+   far below the box the user just clicked in. */
+.tile-control.is-open .tile-query-wrap {
+  order: -3;
+  flex: 0 0 auto;     /* natural height in the column layout; full width via parent's align-items: stretch */
+}
+.tile-control.is-open .icao-search-status { order: -2; }
 .tile-control.is-open .icao-search-results { order: -1; }
 
 .tile-query {
   flex: 1;
   min-width: 3.5rem;   /* can shrink to ~one tile before the wrap kicks in */
-  border: none;
-  outline: none;
+  height: 2rem;        /* match the Edit / Online / Clear buttons exactly */
+  box-sizing: border-box;
+  border: 0;
+  outline: 0;
+  box-shadow: none;    /* kill any browser-default subtle right-edge artifact */
+  -webkit-appearance: none;
+  appearance: none;
   font: inherit;
   font-size: 16px;    /* keeps iOS from zooming on focus */
-  padding: 0.25rem;
+  padding: 0 0.4rem;
   background: transparent;
 }
 
 .tile-control.is-open .tile-query {
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  /* No own border in expanded mode either — the .tile-query-wrap now carries
+     the single visible box around input + clear + magnifier. */
   padding: 0.4rem 0.5rem;
 }
 
@@ -594,10 +824,14 @@ footer {
   font-size: 0.95rem;
   border-radius: 3px;
 }
-.tile-controls button:hover:not(:disabled) { background: #fff; color: var(--fg); }
+@media (hover: hover) {
+  .tile-controls button:hover:not(:disabled) { background: #fff; color: var(--fg); }
+}
 .tile-controls button:disabled { opacity: 0.3; cursor: not-allowed; }
 .tile-remove { font-size: 1.2rem; font-weight: 700; }
-.tile-remove:hover:not(:disabled) { color: var(--error); }
+@media (hover: hover) {
+  .tile-remove:hover:not(:disabled) { color: var(--error); }
+}
 
 /* Collapsed: hide the management chrome (actions/hint); the autocomplete
  * results dropdown may still show as you type. (.icao-actions has its own
@@ -620,7 +854,9 @@ footer {
   padding: 0.15rem 0.25rem;
   border-radius: 3px;
 }
-.tile-control.is-open .tile:hover { background: #f4f7fb; }
+@media (hover: hover) {
+  .tile-control.is-open .tile:hover { background: #f4f7fb; }
+}
 /* The pill stays a chip-sized toggle (same look as collapsed); the airport
  * name takes the rest of the row. */
 .tile-control.is-open .tile-check { flex: 0 0 auto; }

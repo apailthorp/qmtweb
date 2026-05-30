@@ -313,13 +313,24 @@ export function initIcaoControl({
   }
 
   function setOpen(open) {
+    if (isOpen() === open) return;
+    // Capture the Edit toggle's screen position before the layout reflow so
+    // we can scroll the page to keep it under the user's finger / cursor.
+    // Net effect: a second click in the same physical spot toggles back out.
+    const beforeY = manageToggle?.getBoundingClientRect().top ?? 0;
     flipTiles(() => {
       control.classList.toggle("is-open", open);
-      if (onlineBtn) onlineBtn.hidden = !open;
       if (actionsEl) actionsEl.hidden = !open;
     });
     manageToggle?.setAttribute("aria-expanded", open ? "true" : "false");
-    if (open) query.focus();
+    // preventScroll so the browser's default focus-into-view doesn't fight
+    // the compensating scroll we're about to apply.
+    if (open) query.focus({ preventScroll: true });
+    const afterY = manageToggle?.getBoundingClientRect().top ?? 0;
+    const delta = afterY - beforeY;
+    if (Math.abs(delta) > 1) {
+      window.scrollBy({ top: delta, left: 0, behavior: "auto" });
+    }
   }
 
   // --- Initial paint ---
@@ -333,9 +344,30 @@ export function initIcaoControl({
   let searchSeq = 0;
   let onlineSeq = 0;
   let onlineAbort = null;
+  // True when runOnlineSearch auto-expanded the panel from a collapsed state.
+  // We snap back to collapsed after the user picks a result so they don't get
+  // stranded in edit mode after a one-click online search.
+  let expandedForOnline = false;
 
-  function setStatus(text) {
-    if (searchStatusEl) searchStatusEl.textContent = text ?? "";
+  const clearBtn = control?.querySelector("#icao-query-clear") ?? null;
+  function updateClearButton() {
+    if (!clearBtn) return;
+    const hasText = !!query.value;
+    const searching = onlineAbort !== null;
+    clearBtn.hidden = !(hasText || searching);
+  }
+
+  // Status states drive the CSS indicator next to the message:
+  //   "loading"  → animated spinner (in-flight Online query)
+  //   "notfound" → "no result" glyph (empty stations / 404 from proxy)
+  //   "error"    → warning glyph (network failure / dataset unavailable)
+  //   ""         → neutral text only; clears any prior indicator
+  function setStatus(text, state = "") {
+    if (!searchStatusEl) return;
+    searchStatusEl.textContent = text ?? "";
+    searchStatusEl.classList.toggle("is-loading",  state === "loading");
+    searchStatusEl.classList.toggle("is-notfound", state === "notfound");
+    searchStatusEl.classList.toggle("is-error",    state === "error");
   }
 
   function renderResults(results) {
@@ -386,43 +418,61 @@ export function initIcaoControl({
 
   // Render online (nearest-METAR) results into the same dropdown. Station shape:
   // { icao, name, distance_km }. Clicking reuses the data-add-icao handler.
-  function renderOnlineResults(stations) {
+  // Online search now returns one group per resolved location (ambiguous
+  // queries like "King County" or "Springfield" produce multiple groups). Each
+  // group's stations render under a section header showing the interpreted
+  // location, so the user can pick from the right interpretation.
+  function renderOnlineGroups(groups) {
     if (!searchResults) return;
     searchResults.innerHTML = "";
-    if (!stations.length) {
+    const nonEmpty = (groups || []).filter((g) => Array.isArray(g.stations) && g.stations.length);
+    if (!nonEmpty.length) {
       searchResults.hidden = true;
       return;
     }
     searchResults.hidden = false;
     const full = list.length >= LIST_MAX;
-    for (const s of stations) {
-      const item = document.createElement("li");
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "icao-result";
-      btn.dataset.addIcao = s.icao;
-      const isListed = list.includes(s.icao);
-      const isSelected = selected.includes(s.icao);
-      btn.disabled = isSelected || (full && !isListed);
+    const showHeaders = nonEmpty.length > 1; // skip the visual divider when there's only one group
 
-      const codeSpan = document.createElement("span");
-      codeSpan.className = "icao-result-code";
-      const codeStrong = document.createElement("strong");
-      codeStrong.textContent = s.icao;
-      codeSpan.append(codeStrong);
+    for (const group of nonEmpty) {
+      if (showHeaders) {
+        const header = document.createElement("li");
+        header.className = "icao-result-group-header";
+        header.setAttribute("role", "presentation");
+        header.textContent = group.interpreted ?? "";
+        searchResults.append(header);
+      }
+      for (const s of group.stations) {
+        const item = document.createElement("li");
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "icao-result";
+        btn.dataset.addIcao = s.icao;
+        const isListed = list.includes(s.icao);
+        const isSelected = selected.includes(s.icao);
+        btn.disabled = isSelected || (full && !isListed);
 
-      const nameSpan = document.createElement("span");
-      nameSpan.className = "icao-result-name";
-      const dist = typeof s.distance_km === "number" ? ` · ${s.distance_km} km` : "";
-      nameSpan.textContent = `${s.name || s.icao}${dist}`;
+        const codeSpan = document.createElement("span");
+        codeSpan.className = "icao-result-code";
+        const codeStrong = document.createElement("strong");
+        codeStrong.textContent = s.icao;
+        codeSpan.append(codeStrong);
 
-      const hintSpan = document.createElement("span");
-      hintSpan.className = "icao-result-hint icao-result-online";
-      hintSpan.textContent = isSelected ? "active" : isListed ? "reactivate" : full ? "list full" : "online";
+        const nameSpan = document.createElement("span");
+        nameSpan.className = "icao-result-name";
+        const dist = typeof s.distance_km === "number" ? ` · ${s.distance_km} km` : "";
+        nameSpan.textContent = `${s.name || s.icao}${dist}`;
 
-      btn.append(codeSpan, nameSpan, hintSpan);
-      item.append(btn);
-      searchResults.append(item);
+        const hintSpan = document.createElement("span");
+        hintSpan.className = "icao-result-hint icao-result-online";
+        // Same label as the local results — "online" is redundant once the
+        // user is already reviewing online-resolved groups.
+        hintSpan.textContent = isSelected ? "active" : isListed ? "reactivate" : full ? "list full" : "add";
+
+        btn.append(codeSpan, nameSpan, hintSpan);
+        item.append(btn);
+        searchResults.append(item);
+      }
     }
   }
 
@@ -437,7 +487,7 @@ export function initIcaoControl({
     const data = await ensureDataset();
     if (seq !== searchSeq) return;
     if (!data) {
-      setStatus("Search unavailable — type the ICAO directly.");
+      setStatus("Search unavailable — type the ICAO directly.", "error");
       return;
     }
     setStatus("");
@@ -450,10 +500,43 @@ export function initIcaoControl({
   query.addEventListener("input", () => {
     // A new keystroke supersedes any in-flight OR just-resolved online search:
     // abort the request and bump the seq so a late response is discarded.
-    if (onlineAbort) onlineAbort.abort();
+    // Also clear the Online button's busy visuals — runOnlineSearch's
+    // finally{} only clears if seq===onlineSeq, which is no longer true after
+    // we bump it here, so stale .is-loading would otherwise persist.
+    if (onlineAbort) {
+      onlineAbort.abort();
+      onlineAbort = null;
+      onlineBtn?.classList.remove("is-loading");
+      onlineBtn?.removeAttribute("aria-busy");
+    }
     onlineSeq++;
+    // Editing always clears any prior loading/not-found/error indicator so the
+    // user gets a fresh slate; runSearch overlays its own status as needed.
+    setStatus("");
+    updateClearButton();
     runSearch(query.value);
   });
+
+  clearBtn?.addEventListener("click", () => {
+    // One click backs out of an in-flight search OR clears the input. Both
+    // converge on a clean slate so the user can start over.
+    if (onlineAbort) {
+      onlineAbort.abort();
+      onlineAbort = null;
+      onlineSeq++;
+    }
+    onlineBtn?.classList.remove("is-loading");
+    onlineBtn?.removeAttribute("aria-busy");
+    query.value = "";
+    renderResults([]);
+    renderOnlineGroups([]);
+    setStatus("");
+    updateClearButton();
+    query.focus();
+  });
+
+  // Initial paint of the clear button (hidden when the input starts empty).
+  updateClearButton();
 
   // "Online ↗" — resolve the freeform query to nearby METAR stations via the PHP
   // proxy (Tier-1 deterministic + optional free-LLM Tier-2, grounded in live
@@ -465,26 +548,64 @@ export function initIcaoControl({
       setStatus("Type a place, ZIP, or airport, then tap Online.");
       return;
     }
+    // The Online button is reachable from collapsed mode (so a single click
+    // does the search). When that happens, transition into expanded mode so
+    // the results dropdown is visible immediately under the query line — and
+    // remember that we did it, so we can snap back after a selection.
+    if (!isOpen()) {
+      setOpen(true);
+      expandedForOnline = true;
+    }
+
     const seq = ++onlineSeq;
     if (onlineAbort) onlineAbort.abort();
     onlineAbort = new AbortController();
-    setStatus("Searching online…");
+    onlineBtn?.classList.add("is-loading");
+    onlineBtn?.setAttribute("aria-busy", "true");
+    setStatus("Searching online…", "loading");
+    updateClearButton();
     try {
       const res = await fetch(`./api/resolve.php?q=${encodeURIComponent(q)}`, { signal: onlineAbort.signal });
       if (seq !== onlineSeq) return;
       const data = await res.json().catch(() => null);
       if (!res.ok || !data) {
-        renderOnlineResults([]);
-        setStatus(data?.error ?? "Online search is unavailable right now.");
+        renderOnlineGroups([]);
+        // A structured error from the proxy ("couldn't work out a location…")
+        // is semantically not-found; a fetch with no body at all is an error.
+        setStatus(
+          data?.error ?? "Online search is unavailable right now.",
+          data?.error ? "notfound" : "error",
+        );
         return;
       }
-      const stations = Array.isArray(data.stations) ? data.stations : [];
-      renderOnlineResults(stations);
-      setStatus(stations.length ? (data.interpreted ?? "") : "No nearby reporting stations found.");
+      // Filter to groups that actually have stations BEFORE we render or
+      // compute the status — otherwise an empty-station group inflates
+      // groups.length and the "Multiple matches (N)" copy desyncs with the
+      // visibly-rendered N. The server currently drops empty groups too, but
+      // we belt-and-suspender it here in case that contract slips.
+      const groups = Array.isArray(data.groups) ? data.groups : [];
+      const nonEmpty = groups.filter((g) => Array.isArray(g.stations) && g.stations.length);
+      renderOnlineGroups(nonEmpty);
+      if (nonEmpty.length === 0) {
+        setStatus("No nearby reporting stations found.", "notfound");
+      } else if (nonEmpty.length === 1) {
+        setStatus(nonEmpty[0].interpreted ?? "");
+      } else {
+        setStatus(`Multiple matches (${nonEmpty.length}) — pick one`);
+      }
     } catch (err) {
       if (err?.name === "AbortError") return;
-      renderOnlineResults([]);
-      setStatus("Online search failed — try again.");
+      renderOnlineGroups([]);
+      setStatus("Online search failed — try again.", "error");
+    } finally {
+      // Only clear the in-flight indicator if THIS call is still the latest;
+      // a newer click may already have its own spinner running.
+      if (seq === onlineSeq) {
+        onlineBtn?.classList.remove("is-loading");
+        onlineBtn?.removeAttribute("aria-busy");
+        onlineAbort = null;
+        updateClearButton();
+      }
     }
   }
 
@@ -507,13 +628,26 @@ export function initIcaoControl({
     const trimmed = query.value.replace(/[ ,]+$/, "");
     const lastWord = trimmed.split(/[ ,]+/).pop() ?? "";
     const up = lastWord.toUpperCase();
-    if (isValidIcao(up)) {
+    // Syntactic 4-letter check alone tokenizes common English words like
+    // "BASE" or "TIME" when users type natural-language queries. Require the
+    // code to actually be known — present in the seed or the loaded airports
+    // dataset. When the dataset is still loading we fall back to syntax-only
+    // so a fast typer can still tile real codes before data arrives.
+    const datasetReady = dataset !== null;
+    const looksReal =
+      isValidIcao(up) &&
+      (!datasetReady || describeIcao(up, lookupByIcao) !== null);
+    if (looksReal) {
       e.preventDefault();
       query.value = trimmed.slice(0, trimmed.length - lastWord.length).replace(/[ ,]+$/, "");
       addAndSelect(up);
       runSearch(query.value);
     } else if (e.key === "Enter") {
-      e.preventDefault(); // don't submit the form from the query line
+      // Enter (or the iOS "Go" key) on a non-ICAO query fires the Online
+      // search instead of submitting the parent METAR form — same as
+      // tapping the magnifier button.
+      e.preventDefault();
+      runOnlineSearch();
     }
   });
 
@@ -525,7 +659,18 @@ export function initIcaoControl({
       query.value = "";
       renderResults([]);
       setStatus("");
-      query.focus();
+      updateClearButton();
+      // If runOnlineSearch auto-expanded us from collapsed, snap back now
+      // that the user has made a selection — they didn't ask for edit mode.
+      // Move focus to the Edit toggle so keyboard users keep an explicit
+      // focus target (otherwise focus falls back to <body> on collapse).
+      if (expandedForOnline) {
+        expandedForOnline = false;
+        setOpen(false);
+        manageToggle?.focus({ preventScroll: true });
+      } else {
+        query.focus();
+      }
     }
   });
 
@@ -620,7 +765,12 @@ export function initIcaoControl({
 
   // --- Manage toggle ---
 
-  manageToggle?.addEventListener("click", () => setOpen(!isOpen()));
+  manageToggle?.addEventListener("click", () => {
+    // Manual toggle: user wants explicit control of the panel state, so drop
+    // the auto-collapse intent that runOnlineSearch may have set.
+    expandedForOnline = false;
+    setOpen(!isOpen());
+  });
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && isOpen()) {
       setOpen(false);

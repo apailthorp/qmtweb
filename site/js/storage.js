@@ -82,16 +82,16 @@ function parseV2(raw) {
   }
 }
 
-// --- Query settings (Decode + Tabular toggles + Hours window) ---
+// --- Query settings (Decode + Tabular + TAF toggles + Hours window) ---
 // Stored separately from the ICAO list since it's a distinct concern.
-// Shape: { decoded: boolean, tabular: boolean, hours: string }
+// Shape: { decoded: boolean, tabular: boolean, taf: boolean, hours: string }
 // New boolean fields default to false, so older persisted data upgrades
 // cleanly without a key-version bump.
 
 export const QUERY_KEY = "qmtweb.query.v1";
 
 export function defaultQuery() {
-  return { decoded: false, tabular: false, hours: "0" };
+  return { decoded: false, tabular: false, taf: false, hours: "0" };
 }
 
 export function createQueryStore(storage = globalThis.localStorage ?? null) {
@@ -110,6 +110,7 @@ export function createQueryStore(storage = globalThis.localStorage ?? null) {
         return {
           decoded: typeof parsed.decoded === "boolean" ? parsed.decoded : false,
           tabular: typeof parsed.tabular === "boolean" ? parsed.tabular : false,
+          taf:     typeof parsed.taf     === "boolean" ? parsed.taf     : false,
           hours: typeof parsed.hours === "string" ? parsed.hours : "0",
         };
       } catch {
@@ -123,6 +124,7 @@ export function createQueryStore(storage = globalThis.localStorage ?? null) {
         s.setItem(QUERY_KEY, JSON.stringify({
           decoded: Boolean(query?.decoded),
           tabular: Boolean(query?.tabular),
+          taf:     Boolean(query?.taf),
           hours: String(query?.hours ?? "0"),
         }));
       } catch {
