@@ -68,13 +68,13 @@ test.describe("ICAO tiles — collapsed defaults", () => {
     expect(await idsCodes(page)).toEqual(DEFAULT_6);
   });
 
-  test("Online button is hidden until expanded, then visible + enabled", async ({ page }) => {
-    await expect(page.locator("#icao-search-external")).toBeHidden();
-    await openPanel(page);
+  test("Online button is available in collapsed mode (no extra click to expand)", async ({ page }) => {
     const btn = page.locator("#icao-search-external");
     await expect(btn).toBeVisible();
     await expect(btn).toBeEnabled();
     await expect(btn).toHaveAttribute("title", /nearest/i);
+    // Panel is still collapsed; the button just sits in the query row.
+    await expect(page.locator("#manage-toggle")).toHaveAttribute("aria-expanded", "false");
   });
 });
 
@@ -345,16 +345,20 @@ test.describe("ICAO tiles — online search (mocked PHP proxy)", () => {
     await openPanel(page);
   });
 
-  test("resolves a query to nearby stations; clicking one adds a tile", async ({ page }) => {
+  test("resolves a single-candidate query; clicking a station adds a tile", async ({ page }) => {
     await page.route("**/api/resolve.php**", (route) =>
       route.fulfill({
         status: 200,
         contentType: "application/json",
         body: JSON.stringify({
-          interpreted: "Nearest METAR to Ilwaco, WA",
-          stations: [
-            { icao: "KAST", name: "Astoria Regional", distance_km: 12.3 },
-            { icao: "KOLM", name: "Olympia Regional", distance_km: 80.1 },
+          groups: [
+            {
+              interpreted: "Nearest METAR to Ilwaco, WA",
+              stations: [
+                { icao: "KAST", name: "Astoria Regional", distance_km: 12.3 },
+                { icao: "KOLM", name: "Olympia Regional", distance_km: 80.1 },
+              ],
+            },
           ],
         }),
       }),
@@ -366,12 +370,53 @@ test.describe("ICAO tiles — online search (mocked PHP proxy)", () => {
     const kast = page.locator("#icao-search-results button[data-add-icao='KAST']");
     await expect(kast).toBeVisible();
     await expect(kast).toContainText(/12\.3 km/);
-    await expect(kast).toContainText(/online/i);
+    await expect(kast).toContainText(/add/i);
     await expect(page.locator("#icao-search-status")).toContainText(/Ilwaco/i);
+    // Single-group result hides the section header (one location is obvious).
+    await expect(page.locator("#icao-search-results .icao-result-group-header")).toHaveCount(0);
 
     await kast.click();
     await expect(page.locator(tile("KAST"))).toHaveClass(/\bis-active\b/);
     expect(await idsCodes(page)).toContain("KAST");
+  });
+
+  test("ambiguous query renders one section per candidate with headers", async ({ page }) => {
+    await page.route("**/api/resolve.php**", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          groups: [
+            {
+              interpreted: "Nearest METAR to King County, Washington, United States",
+              stations: [
+                { icao: "KRNT", name: "Renton Muni, WA, US", distance_km: 26.5 },
+                { icao: "KSEA", name: "Seattle-Tacoma Intl, WA, US", distance_km: 34.3 },
+              ],
+            },
+            {
+              interpreted: "Nearest METAR to King County, Texas, United States",
+              stations: [
+                { icao: "KCDS", name: "Childress Muni, TX, US", distance_km: 93.5 },
+              ],
+            },
+          ],
+        }),
+      }),
+    );
+
+    await page.locator("#icao-query").fill("King County");
+    await page.locator("#icao-search-external").click();
+
+    const headers = page.locator("#icao-search-results .icao-result-group-header");
+    await expect(headers).toHaveCount(2);
+    await expect(headers.nth(0)).toContainText(/King County, Washington/i);
+    await expect(headers.nth(1)).toContainText(/King County, Texas/i);
+
+    // Both candidate stations are clickable; status invites the user to pick.
+    await expect(page.locator("#icao-search-results button[data-add-icao='KRNT']")).toBeVisible();
+    await expect(page.locator("#icao-search-results button[data-add-icao='KCDS']")).toBeVisible();
+    await expect(page.locator("#icao-search-status")).toContainText(/multiple matches/i);
   });
 
   test("an error response surfaces a message and adds nothing", async ({ page }) => {
@@ -400,5 +445,232 @@ test.describe("ICAO tiles — online search (mocked PHP proxy)", () => {
     await page.locator("#icao-search-external").click();
     await expect(page.locator("#icao-search-status")).toContainText(/type a place/i);
     expect(called).toBe(false);
+  });
+
+  test("Online button shows an in-flight spinner; clears on response", async ({ page }) => {
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    await page.route("**/api/resolve.php**", async (route) => {
+      await gate;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          groups: [
+            {
+              interpreted: "Nearest METAR",
+              stations: [{ icao: "KAST", name: "Astoria", distance_km: 1 }],
+            },
+          ],
+        }),
+      });
+    });
+
+    await page.locator("#icao-query").fill("test");
+    await page.locator("#icao-search-external").click();
+    const btn = page.locator("#icao-search-external");
+    // The in-flight cue is on the button itself — where the click landed —
+    // plus aria-busy for screen readers. The status row also adopts the
+    // loading colour class via setStatus(..., "loading").
+    await expect(btn).toHaveClass(/is-loading/);
+    await expect(btn).toHaveAttribute("aria-busy", "true");
+    await expect(page.locator("#icao-search-status")).toHaveClass(/is-loading/);
+    release();
+    await expect(btn).not.toHaveClass(/is-loading/);
+    await expect(btn).not.toHaveAttribute("aria-busy", /.*/);
+    await expect(page.locator("#icao-search-status")).not.toHaveClass(/is-loading/);
+  });
+
+  test("clicking Online from collapsed mode auto-expands the panel", async ({ page }) => {
+    await page.route("**/api/resolve.php**", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          groups: [
+            { interpreted: "Nearest METAR to Spokane, WA", stations: [{ icao: "KGEG", name: "Spokane Intl", distance_km: 8 }] },
+          ],
+        }),
+      }),
+    );
+
+    // Start collapsed (the describe's beforeEach opens the panel — so close it).
+    await page.locator("#manage-toggle").click();
+    await expect(page.locator("#manage-toggle")).toHaveAttribute("aria-expanded", "false");
+
+    // Type + click Online with the panel still collapsed.
+    await page.locator("#icao-query").fill("Spokane");
+    await page.locator("#icao-search-external").click();
+
+    // Panel auto-expands and the result appears under the query line.
+    await expect(page.locator("#manage-toggle")).toHaveAttribute("aria-expanded", "true");
+    await expect(page.locator("#icao-search-results button[data-add-icao='KGEG']")).toBeVisible();
+  });
+
+  test("auto-collapses back to the prior mode after a selection", async ({ page }) => {
+    await page.route("**/api/resolve.php**", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          groups: [
+            { interpreted: "Nearest METAR to Spokane, WA", stations: [{ icao: "KGEG", name: "Spokane Intl", distance_km: 8 }] },
+          ],
+        }),
+      }),
+    );
+
+    // Start collapsed.
+    await page.locator("#manage-toggle").click();
+    await expect(page.locator("#manage-toggle")).toHaveAttribute("aria-expanded", "false");
+
+    // Run Online from collapsed (auto-expands).
+    await page.locator("#icao-query").fill("Spokane");
+    await page.locator("#icao-search-external").click();
+    await expect(page.locator("#manage-toggle")).toHaveAttribute("aria-expanded", "true");
+
+    // Pick the result — panel should snap back to collapsed because the user
+    // didn't enter edit mode by hand.
+    await page.locator("#icao-search-results button[data-add-icao='KGEG']").click();
+    await expect(page.locator("#manage-toggle")).toHaveAttribute("aria-expanded", "false");
+    expect(await idsCodes(page)).toContain("KGEG");
+  });
+
+  test("stays expanded after selection if the user opened the panel manually", async ({ page }) => {
+    await page.route("**/api/resolve.php**", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          groups: [
+            { interpreted: "Nearest METAR to Spokane, WA", stations: [{ icao: "KGEG", name: "Spokane Intl", distance_km: 8 }] },
+          ],
+        }),
+      }),
+    );
+
+    // Manually open the panel (the describe's beforeEach already did this).
+    await expect(page.locator("#manage-toggle")).toHaveAttribute("aria-expanded", "true");
+    await page.locator("#icao-query").fill("Spokane");
+    await page.locator("#icao-search-external").click();
+    await page.locator("#icao-search-results button[data-add-icao='KGEG']").click();
+    // Still expanded — the user is in edit mode on purpose.
+    await expect(page.locator("#manage-toggle")).toHaveAttribute("aria-expanded", "true");
+  });
+
+  test("clear × button is hidden when empty, visible when typing, and clears + aborts on click", async ({ page }) => {
+    const q = page.locator("#icao-query");
+    const x = page.locator("#icao-query-clear");
+
+    // Hidden on first paint (input is empty, no search running).
+    await expect(x).toBeHidden();
+
+    // Type → appears.
+    await q.fill("Spokane");
+    await expect(x).toBeVisible();
+
+    // Stage a slow resolve.php so the click can land mid-flight.
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    await page.route("**/api/resolve.php**", async (route) => {
+      await gate;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ groups: [{ interpreted: "x", stations: [{ icao: "KAST", name: "x", distance_km: 1 }] }] }),
+      });
+    });
+    await page.locator("#icao-search-external").click();
+    await expect(page.locator("#icao-search-external")).toHaveClass(/is-loading/);
+
+    // Cancel mid-flight — query clears, button spinner clears, status clears,
+    // clear button hides again because there's nothing to clear or cancel.
+    await x.click();
+    await expect(page.locator("#icao-search-external")).not.toHaveClass(/is-loading/);
+    await expect(q).toHaveValue("");
+    await expect(x).toBeHidden();
+    release(); // let the deferred fulfill complete; aborted fetch shouldn't render anything
+  });
+
+  test("shows a not-found indicator on a 404 from the proxy; clears on next edit", async ({ page }) => {
+    await page.route("**/api/resolve.php**", (route) =>
+      route.fulfill({
+        status: 404,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "Couldn't work out a location from that." }),
+      }),
+    );
+
+    await page.locator("#icao-query").fill("nothing nearby");
+    await page.locator("#icao-search-external").click();
+    await expect(page.locator("#icao-search-status")).toHaveClass(/is-notfound/);
+    await expect(page.locator("#icao-search-status")).toContainText(/couldn't work out a location/i);
+
+    // Any edit clears the indicator so the user gets a fresh slate.
+    await page.locator("#icao-query").pressSequentially("x");
+    await expect(page.locator("#icao-search-status")).not.toHaveClass(/is-notfound/);
+  });
+
+  test("pressing Enter (or iOS 'Go') on a place query fires Online search and does NOT submit the form", async ({ page }) => {
+    await page.route("**/api/resolve.php**", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          groups: [
+            { interpreted: "Nearest METAR to Spokane, WA", stations: [{ icao: "KGEG", name: "Spokane Intl", distance_km: 8 }] },
+          ],
+        }),
+      }),
+    );
+
+    // Detect navigation — if Enter fell through to form submit, the page would
+    // try to navigate away from the dev server (form action is aviationweather.gov).
+    let navigated = false;
+    page.on("framenavigated", (f) => {
+      if (f === page.mainFrame() && !f.url().startsWith("http://localhost") && !f.url().startsWith("http://127.0.0.1")) {
+        navigated = true;
+      }
+    });
+
+    await page.locator("#icao-query").fill("Spokane");
+    await page.locator("#icao-query").press("Enter");
+
+    // Online result rendered (same as if magnifier was clicked).
+    await expect(page.locator("#icao-search-results button[data-add-icao='KGEG']")).toBeVisible();
+    expect(navigated).toBe(false);
+  });
+});
+
+test.describe("ICAO tiles — tokenizer requires known codes", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto("/");
+    await openPanel(page);
+  });
+
+  test("a 4-letter word that isn't a real ICAO (e.g. BASE) does NOT tokenize", async ({ page }) => {
+    const q = page.locator("#icao-query");
+    // Warm the dataset so the membership check is active; a known prefix gives
+    // us a real local result, signalling lookupByIcao is populated.
+    await q.fill("Sea");
+    await expect(page.locator("#icao-search-results .icao-result").first()).toBeVisible();
+    await q.fill("");
+    await q.pressSequentially("BASE ");
+    // No spurious BASE tile, query keeps the literal text.
+    await expect(page.locator(tile("BASE"))).toHaveCount(0);
+    await expect(q).toHaveValue("BASE ");
+  });
+
+  test("typed natural-language phrase produces no tiles for any of its words", async ({ page }) => {
+    const q = page.locator("#icao-query");
+    await q.fill("Sea");
+    await expect(page.locator("#icao-search-results .icao-result").first()).toBeVisible();
+    await q.fill("");
+    await q.pressSequentially("airforce base in Washington ");
+    // None of {AIRF (5 char), BASE (4 char), WASH (4 char prefix typed mid-word)}
+    // should appear as tiles; the only 4-letter candidate "BASE" is a real
+    // English word that fails the membership check.
+    await expect(page.locator(tile("BASE"))).toHaveCount(0);
+    await expect(page.locator(tile("AIRF"))).toHaveCount(0);
   });
 });
