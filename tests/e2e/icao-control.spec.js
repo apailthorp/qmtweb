@@ -51,13 +51,16 @@ test.describe("ICAO tiles — collapsed defaults", () => {
     await page.goto("/");
   });
 
-  test("starts collapsed showing only the active tiles", async ({ page }) => {
+  test("starts collapsed showing active tiles as pills and inactive ones as bullets", async ({ page }) => {
     await expect(page.locator("#manage-toggle")).toHaveAttribute("aria-expanded", "false");
-    // 12 tiles exist; the 6 active are visible, the rest hidden.
+    // All 12 tiles are in the DOM; the 6 active show as full pills, the other
+    // 6 show as small bullets (the inactive .tile-check is shrunk to a dot).
     await expect(page.locator("#icao-tiles .tile")).toHaveCount(12);
     await expect(page.locator(".tile.is-active")).toHaveCount(6);
     await expect(page.locator(tile("KPAE"))).toBeVisible();
-    await expect(page.locator(tile("KSEA"))).toBeHidden();
+    // Inactive tiles are still visible in the layout — just rendered as bullets.
+    await expect(page.locator(tile("KSEA"))).toBeVisible();
+    await expect(page.locator(tile("KSEA"))).not.toHaveClass(/\bis-active\b/);
   });
 
   test("count badge reflects (selected/list)", async ({ page }) => {

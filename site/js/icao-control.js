@@ -715,14 +715,20 @@ export function initIcaoControl({
     e.dataTransfer.setData("text/plain", dragIcao);
     row.classList.add("dragging");
   });
+  // Horizontal chip flow in collapsed mode, vertical row stack in expanded.
+  // Use clientX vs clientY to detect "before/after" depending on the axis.
+  function isDropBefore(rect, e) {
+    return isOpen()
+      ? e.clientY < rect.top + rect.height / 2
+      : e.clientX < rect.left + rect.width / 2;
+  }
   tiles.addEventListener("dragover", (e) => {
     if (!dragIcao) return;
     const row = e.target.closest(".tile");
     if (!row || row.dataset.icao === dragIcao) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = "move";
-    const rect = row.getBoundingClientRect();
-    const before = e.clientY < rect.top + rect.height / 2;
+    const before = isDropBefore(row.getBoundingClientRect(), e);
     clearDropMarkers();
     row.classList.add(before ? "drop-before" : "drop-after");
   });
@@ -734,8 +740,7 @@ export function initIcaoControl({
     const row = e.target.closest(".tile");
     if (!row || row.dataset.icao === dragIcao) { clearDropMarkers(); return; }
     e.preventDefault();
-    const rect = row.getBoundingClientRect();
-    const before = e.clientY < rect.top + rect.height / 2;
+    const before = isDropBefore(row.getBoundingClientRect(), e);
     const targetIndex = list.indexOf(row.dataset.icao);
     const fromIndex = list.indexOf(dragIcao);
     let newIndex = before ? targetIndex : targetIndex + 1;

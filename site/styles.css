@@ -33,12 +33,36 @@ body {
 main {
   max-width: var(--max-width);
   margin: 0 auto;
-  padding: 1rem 1rem 1.5rem;
+  /* Honour iOS safe-areas (notch / home indicator) when added to home screen
+     or viewed in a PWA-style frame; falls back to 1rem on classic browsers. */
+  padding:
+    calc(env(safe-area-inset-top, 0px) + 1rem)
+    max(env(safe-area-inset-right, 0px), 1rem)
+    calc(env(safe-area-inset-bottom, 0px) + 1.5rem)
+    max(env(safe-area-inset-left, 0px), 1rem);
 }
 
 header h1 {
   margin: 0;
   font-size: 1.75rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.brand-mark {
+  flex-shrink: 0;
+  color: var(--accent);
+  /* Slightly larger than the h1 text so the windsock reads as a brand mark
+     rather than a tiny inline glyph. 1.2em → ~33.6px at the h1's 1.75rem. */
+  width: 1.2em;
+  height: 1.2em;
+}
+
+/* Reference sections (NOAA / KING 5) get a lighter chrome so the primary
+   METAR/TAF section reads as the action. */
+section:not(:first-of-type) {
+  background: #fbfbfd;
 }
 
 .tagline {
@@ -57,10 +81,11 @@ section {
 
 h2 {
   margin: 0 0 0.5rem;
-  font-size: 1.1rem;
+  font-size: 0.95rem;
   color: var(--fg-muted);
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.08em;
+  font-weight: 700;
 }
 
 a {
@@ -209,10 +234,14 @@ form input[type="text"] {
 }
 
 /* Decode + Tabular + TAF stay together — they wrap as one unit instead of
- * splitting across lines at narrow widths (e.g. 344px Z Fold). */
+ * splitting across lines at narrow widths (e.g. 344px Z Fold). Wrapped in a
+ * soft pill so the three switches read as one "format" panel. */
 .format-toggles {
   gap: 0.4rem;
   flex-wrap: nowrap;
+  background: #f3f5f9;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
 }
 
 .form-controls .actions {
@@ -221,8 +250,10 @@ form input[type="text"] {
 }
 
 .form-controls .actions button {
-  padding: 0.3rem 0.7rem;
+  padding: 0.45rem 1.1rem;
   font-size: 0.9rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
 }
 
 .form-controls .actions button:disabled {
@@ -305,6 +336,8 @@ button {
 .manage-icon {
   display: block;
   flex-shrink: 0;
+  width: 18px;
+  height: 18px;
 }
 
 .icao-count {
@@ -335,7 +368,7 @@ button {
   cursor: pointer;
   white-space: nowrap;
 }
-.icao-search-external-icon { display: block; }
+.icao-search-external-icon { display: block; width: 18px; height: 18px; }
 
 @media (hover: hover) {
   .icao-search-external:hover:not(:disabled) { color: var(--accent); }
@@ -840,7 +873,59 @@ footer {
 .tile-control:not(.is-open) .icao-hint { display: none; }
 
 /* Collapsed: only active tiles, chips only — no name/controls/drag. */
-.tile-control:not(.is-open) .tile:not(.is-active) { display: none; }
+/* Inactive tiles in collapsed mode render as small bullets, preserving their
+   position in the list. Clicking a bullet promotes it back to a full pill
+   (same toggleSelected path as the pill itself); the bullets are still
+   skipped from the form submit because `selected` controls the hidden #ids,
+   not the visible chip count.
+   The .tile-check button keeps a generous outer hit-box (the whole 0.95rem
+   square) so the bullet is grabbable for drag-reorder; the visible bullet
+   is drawn by an inner ::before so it can stay tiny without shrinking the
+   click/drag target. */
+.tile-control:not(.is-open) .tile:not(.is-active) {
+  align-self: center;
+}
+.tile-control:not(.is-open) .tile:not(.is-active) .tile-check {
+  position: relative;
+  width: 0.95rem;
+  height: 0.95rem;
+  min-width: 0;
+  padding: 0;
+  border-radius: 50%;
+  background: transparent;
+  border: none;
+  color: transparent;       /* hides the ICAO text without removing the click target */
+  font-size: 0;             /* collapse the text node so it doesn't enlarge the button */
+  line-height: 1;
+  gap: 0;
+  box-shadow: none;
+}
+.tile-control:not(.is-open) .tile:not(.is-active) .tile-check::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  background: transparent;
+  border: 1.5px solid #b0b6c0;
+  box-sizing: border-box;
+}
+@media (hover: hover) {
+  .tile-control:not(.is-open) .tile:not(.is-active) .tile-check:hover::before {
+    border-color: var(--accent);
+    background: rgba(42, 93, 159, 0.12);
+  }
+}
+
+/* Drag-reorder cues in collapsed mode — the ⋮⋮ handle is hidden but the whole
+   pill/bullet is draggable via the <li draggable>. cursor: grab on the active
+   pill and inactive bullet hints that to a mouse user; cursor: grabbing while
+   the tile is the drag source. (No effect on touch.) */
+.tile-control:not(.is-open) .tile-check { cursor: grab; }
+.tile-control:not(.is-open) .tile.dragging .tile-check { cursor: grabbing; }
+
 .tile-control:not(.is-open) .tile-name,
 .tile-control:not(.is-open) .tile-controls,
 .tile-control:not(.is-open) .tile-drag { display: none; }
@@ -870,5 +955,10 @@ footer {
 }
 
 .tile.dragging { opacity: 0.4; }
+/* Drop indicators — expanded mode stacks tiles as rows, so the bar sits on
+   the top/bottom edge of the target. Collapsed mode flows chips horizontally,
+   so we override to a vertical bar on the left/right edge of the target. */
 .tile.drop-before { box-shadow: inset 0 2px 0 0 var(--accent); }
 .tile.drop-after { box-shadow: inset 0 -2px 0 0 var(--accent); }
+.tile-control:not(.is-open) .tile.drop-before { box-shadow: inset 2px 0 0 0 var(--accent); }
+.tile-control:not(.is-open) .tile.drop-after { box-shadow: inset -2px 0 0 0 var(--accent); }
