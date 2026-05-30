@@ -135,27 +135,27 @@ describe("createQueryStore", () => {
     store = createQueryStore(storage);
   });
 
-  it("defaultQuery is decode-off, tabular-off, hours 0", () => {
-    expect(defaultQuery()).toEqual({ decoded: false, tabular: false, hours: "0" });
+  it("defaultQuery is decode-off, tabular-off, taf-off, hours 0", () => {
+    expect(defaultQuery()).toEqual({ decoded: false, tabular: false, taf: false, hours: "0" });
   });
 
   it("load() returns defaults when empty", () => {
-    expect(store.load()).toEqual({ decoded: false, tabular: false, hours: "0" });
+    expect(store.load()).toEqual({ decoded: false, tabular: false, taf: false, hours: "0" });
   });
 
-  it("round-trips decoded + tabular + hours", () => {
-    store.save({ decoded: true, tabular: true, hours: "6" });
-    expect(store.load()).toEqual({ decoded: true, tabular: true, hours: "6" });
+  it("round-trips decoded + tabular + taf + hours", () => {
+    store.save({ decoded: true, tabular: true, taf: true, hours: "6" });
+    expect(store.load()).toEqual({ decoded: true, tabular: true, taf: true, hours: "6" });
   });
 
   it("coerces hours to a string on save", () => {
-    store.save({ decoded: false, tabular: false, hours: 12 });
-    expect(store.load()).toEqual({ decoded: false, tabular: false, hours: "12" });
+    store.save({ decoded: false, tabular: false, taf: false, hours: 12 });
+    expect(store.load()).toEqual({ decoded: false, tabular: false, taf: false, hours: "12" });
   });
 
-  it("defaults tabular=false for older data that predates the field", () => {
+  it("defaults tabular=false and taf=false for older data that predates the fields", () => {
     storage.setItem(QUERY_KEY, JSON.stringify({ decoded: true, hours: "3" }));
-    expect(store.load()).toEqual({ decoded: true, tabular: false, hours: "3" });
+    expect(store.load()).toEqual({ decoded: true, tabular: false, taf: false, hours: "3" });
   });
 
   it("falls back to defaults on corrupt JSON", () => {
@@ -164,8 +164,8 @@ describe("createQueryStore", () => {
   });
 
   it("ignores wrong-typed fields", () => {
-    storage.setItem(QUERY_KEY, JSON.stringify({ decoded: "yes", tabular: 1, hours: 3 }));
-    expect(store.load()).toEqual({ decoded: false, tabular: false, hours: "0" });
+    storage.setItem(QUERY_KEY, JSON.stringify({ decoded: "yes", tabular: 1, taf: "no", hours: 3 }));
+    expect(store.load()).toEqual({ decoded: false, tabular: false, taf: false, hours: "0" });
   });
 
   it("uses a versioned key", () => {

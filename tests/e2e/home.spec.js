@@ -86,14 +86,18 @@ test.describe("pailthorp.net home page", () => {
     await expect(toggle).toBeChecked();              // user can flip it on
   });
 
-  test("Submit buttons bind to `taf` with 0/1 values", async ({ page }) => {
-    const metarOnly = page.locator("button[name='taf'][value='0']");
-    const metarTaf = page.locator("button[name='taf'][value='1']");
-    await expect(metarOnly).toHaveText("METAR");
-    await expect(metarTaf).toHaveText("METAR/TAF");
+  test("single submit button — TAF rides on its own toggle (name=taf, value=1)", async ({ page }) => {
+    const submit = page.locator("form#metar-form button[type='submit']");
+    await expect(submit).toHaveCount(1);
+    await expect(submit).toHaveText("METAR");
+    // TAF rides on the toggle — when checked, the form GETs taf=1; when not, no taf= param at all.
+    const tafToggle = page.locator("#taf-toggle");
+    await expect(tafToggle).toHaveAttribute("name", "taf");
+    await expect(tafToggle).toHaveAttribute("value", "1");
+    await expect(tafToggle).toHaveAttribute("role", "switch");
   });
 
-  test("Decode + Hours persist across reload (Tabular stays off)", async ({ page }) => {
+  test("Decode + Hours persist across reload (Tabular and TAF stay off)", async ({ page }) => {
     await page.locator("#decoded-toggle").check();
     await page.locator("#hours-select").selectOption("6");
 
@@ -101,6 +105,7 @@ test.describe("pailthorp.net home page", () => {
 
     await expect(page.locator("#decoded-toggle")).toBeChecked();
     await expect(page.locator("#tabular-toggle")).not.toBeChecked();
+    await expect(page.locator("#taf-toggle")).not.toBeChecked();
     await expect(page.locator("#hours-select")).toHaveValue("6");
   });
 
@@ -144,26 +149,36 @@ test.describe("pailthorp.net home page", () => {
     await expect(page.locator("#decoded-toggle")).not.toBeChecked();
   });
 
-  test("Tabular disables the METAR/TAF button (Tabular excludes TAF)", async ({ page }) => {
-    const metarTaf = page.locator("button[name='taf'][value='1']");
-    const metarOnly = page.locator("button[name='taf'][value='0']");
-    await expect(metarTaf).toBeEnabled();
+  test("Tabular and TAF are mutually exclusive", async ({ page }) => {
+    const tabular = page.locator("#tabular-toggle");
+    const taf = page.locator("#taf-toggle");
 
-    await page.locator("#tabular-toggle").check();
-    await expect(metarTaf).toBeDisabled();
-    await expect(metarOnly).toBeEnabled(); // plain METAR still allowed
+    // Turn TAF on, then Tabular — Tabular forces TAF off.
+    await taf.check();
+    await expect(taf).toBeChecked();
+    await expect(tabular).not.toBeChecked();
+    await tabular.check();
+    await expect(tabular).toBeChecked();
+    await expect(taf).not.toBeChecked();
 
-    // Turning Tabular off (here via Decode, which excludes Tabular) re-enables it.
-    await page.locator("#decoded-toggle").check();
-    await expect(page.locator("#tabular-toggle")).not.toBeChecked();
-    await expect(metarTaf).toBeEnabled();
+    // And the reverse — turning TAF on forces Tabular off.
+    await taf.check();
+    await expect(taf).toBeChecked();
+    await expect(tabular).not.toBeChecked();
   });
 
-  test("METAR/TAF disabled state persists across reload", async ({ page }) => {
-    await page.locator("#tabular-toggle").check();
+  test("Decode + TAF can co-exist (only Tabular conflicts with TAF)", async ({ page }) => {
+    await page.locator("#decoded-toggle").check();
+    await page.locator("#taf-toggle").check();
+    await expect(page.locator("#decoded-toggle")).toBeChecked();
+    await expect(page.locator("#taf-toggle")).toBeChecked();
+    await expect(page.locator("#tabular-toggle")).not.toBeChecked();
+  });
+
+  test("TAF state persists across reload", async ({ page }) => {
+    await page.locator("#taf-toggle").check();
     await page.reload();
-    await expect(page.locator("#tabular-toggle")).toBeChecked();
-    await expect(page.locator("button[name='taf'][value='1']")).toBeDisabled();
+    await expect(page.locator("#taf-toggle")).toBeChecked();
   });
 
   test("an empty selection blocks submission with an inline error", async ({ page }) => {
@@ -179,7 +194,7 @@ test.describe("pailthorp.net home page", () => {
       if (f === page.mainFrame() && !f.url().endsWith("/")) navigated = true;
     });
 
-    await page.locator("button[name='taf'][value='0']").click();
+    await page.locator("form#metar-form button[type='submit']").click();
     await expect(page.locator("#form-error")).toBeVisible();
     await expect(page.locator("#form-error")).toContainText(/add at least one/i);
     expect(navigated).toBe(false);
@@ -188,7 +203,7 @@ test.describe("pailthorp.net home page", () => {
   test("typing in the query clears a prior error", async ({ page }) => {
     await page.locator("#manage-toggle").click();
     await page.locator("button[data-action='select-none']").click();
-    await page.locator("button[name='taf'][value='0']").click();
+    await page.locator("form#metar-form button[type='submit']").click();
     await expect(page.locator("#form-error")).toBeVisible();
 
     await page.locator("#icao-query").fill("K");

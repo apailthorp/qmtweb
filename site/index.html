@@ -23,34 +23,17 @@
           method="GET"
           action="https://aviationweather.gov/data/metar/"
         >
-          <label id="ids-label" for="icao-query">Airports</label>
           <div id="tile-control" class="tile-control">
-            <div class="tile-box">
-              <ol id="icao-tiles" class="tiles" aria-label="Airport list"></ol>
-              <span class="tile-query-wrap">
-                <input
-                  id="icao-query"
-                  class="tile-query"
-                  type="text"
-                  autocomplete="off"
-                  spellcheck="false"
-                  placeholder="Add ICAO, city, or airport…"
-                  aria-describedby="icao-search-status"
-                />
-                <button
-                  id="icao-search-external"
-                  type="button"
-                  class="icao-search-external"
-                  hidden
-                  title="Search online for the nearest reporting METAR station"
-                  aria-label="Search online for the nearest METAR station"
-                >Online ↗</button>
+            <div class="airports-box">
+              <div class="ids-label-row">
+                <label id="ids-label" for="icao-query">Airports <span class="icao-count" id="icao-count" aria-live="polite"></span></label>
                 <button
                   id="manage-toggle"
                   type="button"
                   class="manage-toggle"
                   aria-controls="tile-control"
                   aria-expanded="false"
+                  title="Edit airport list"
                 >
                   <svg class="manage-icon" viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" focusable="false">
                     <g stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none">
@@ -60,18 +43,60 @@
                       <path d="M11 9.5 L14.5 6 L13 4.5 L9.5 8 L9 10 Z" fill="currentColor" stroke="none" />
                     </g>
                   </svg>
-                  <svg class="manage-icon" viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" focusable="false">
-                    <circle cx="6.5" cy="6.5" r="4.5" fill="none" stroke="currentColor" stroke-width="1.6" />
-                    <line x1="10" y1="10" x2="14.5" y2="14.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
-                  </svg>
-                  <span class="visually-hidden">Manage and search list</span>
-                  <span class="icao-count" id="icao-count" aria-live="polite"></span>
+                  <span class="visually-hidden">Edit airport list</span>
                 </button>
-              </span>
-              <ul id="icao-search-results" class="icao-search-results" hidden></ul>
+              </div>
+              <ol id="icao-tiles" class="tiles" aria-label="Airport list"></ol>
             </div>
-
+            <span class="tile-query-wrap">
+                <input
+                  id="icao-query"
+                  class="tile-query"
+                  type="text"
+                  inputmode="search"
+                  enterkeyhint="search"
+                  autocomplete="off"
+                  autocapitalize="off"
+                  autocorrect="off"
+                  spellcheck="false"
+                  placeholder="Add ICAO, city, or airport…"
+                  aria-describedby="icao-search-status"
+                />
+                <button
+                  id="icao-query-clear"
+                  type="button"
+                  class="icao-query-clear"
+                  hidden
+                  title="Clear text or cancel search"
+                  aria-label="Clear text or cancel search"
+                >
+                  <svg viewBox="0 0 14 14" width="12" height="12" aria-hidden="true" focusable="false">
+                    <g stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+                      <line x1="3" y1="3" x2="11" y2="11" />
+                      <line x1="11" y1="3" x2="3" y2="11" />
+                    </g>
+                  </svg>
+                </button>
+                <button
+                  id="icao-search-external"
+                  type="button"
+                  class="icao-search-external"
+                  title="Search online for the nearest reporting METAR station"
+                  aria-label="Search online for the nearest METAR station"
+                >
+                  <svg class="icao-search-external-icon" viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" focusable="false">
+                    <g stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round">
+                      <circle cx="7" cy="7" r="4.5" />
+                      <line x1="10.2" y1="10.2" x2="14" y2="14" />
+                    </g>
+                  </svg>
+                  <span class="search-splat" aria-hidden="true">
+                    <span>&#42;</span><span>&#10059;</span><span>&#10041;</span><span>&#10041;</span><span>&#10041;</span><span>&#10059;</span><span>&#183;</span><span>&#10047;</span><span>&#10047;</span><span>&#10047;</span><span>&#10047;</span><span>&#10048;</span><span>&#10048;</span><span>&#183;</span>
+                  </span>
+                </button>
+            </span>
             <p id="icao-search-status" class="icao-search-status" aria-live="polite"></p>
+            <ul id="icao-search-results" class="icao-search-results" hidden></ul>
 
             <div id="icao-actions" class="icao-actions" hidden>
               <button type="button" data-action="select-defaults">Restore defaults</button>
@@ -112,10 +137,14 @@
                 <span class="toggle-track" aria-hidden="true"><span class="toggle-thumb"></span></span>
                 <span>Tabular</span>
               </label>
+              <label class="ctrl-group toggle">
+                <input id="taf-toggle" type="checkbox" role="switch" name="taf" value="1" />
+                <span class="toggle-track" aria-hidden="true"><span class="toggle-thumb"></span></span>
+                <span>TAF</span>
+              </label>
             </div>
             <div class="ctrl-group actions">
-              <button type="submit" name="taf" value="0">METAR</button>
-              <button type="submit" name="taf" value="1">METAR/TAF</button>
+              <button type="submit">METAR</button>
             </div>
           </div>
 

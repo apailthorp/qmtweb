@@ -17,8 +17,8 @@ const onlineBtn = document.getElementById("icao-search-external");
 const manageToggle = document.getElementById("manage-toggle");
 const decodedToggle = document.getElementById("decoded-toggle");
 const tabularToggle = document.getElementById("tabular-toggle");
+const tafToggle = document.getElementById("taf-toggle");
 const hoursSelect = document.getElementById("hours-select");
-const metarTafButton = form?.querySelector("button[name='taf'][value='1']");
 
 function showError(message) {
   errorEl.textContent = message;
@@ -46,51 +46,50 @@ if (tilesEl && hiddenIds) {
   });
 }
 
-// Persist the Decode toggle + Hours window so they survive a refresh,
-// the same way the ICAO list does.
+// Persist the Decode / Tabular / TAF toggles + Hours window so they survive
+// a refresh, the same way the ICAO list does.
 const queryStore = createQueryStore();
 const savedQuery = queryStore.load();
 if (decodedToggle) decodedToggle.checked = savedQuery.decoded;
 if (tabularToggle) tabularToggle.checked = savedQuery.tabular;
-// Decode and Tabular are mutually exclusive — never let both be on, even
-// if storage somehow holds both (defensive).
+if (tafToggle)     tafToggle.checked     = savedQuery.taf;
+// Mutual-exclusion rules:
+//   Decoded ⊕ Tabular  (output format is one or the other)
+//   Tabular ⊕ TAF      (the tabular view can't carry a TAF)
+// Defensive guard in case storage somehow holds an illegal combination.
 if (decodedToggle?.checked && tabularToggle?.checked) tabularToggle.checked = false;
+if (tabularToggle?.checked && tafToggle?.checked)     tafToggle.checked     = false;
 if (hoursSelect) {
   const hasOption = Array.from(hoursSelect.options).some((o) => o.value === savedQuery.hours);
   if (hasOption) hoursSelect.value = savedQuery.hours;
-}
-
-// Tabular output can't carry a TAF, so the METAR/TAF submit is disabled
-// whenever Tabular is on.
-function syncTafButton() {
-  if (!metarTafButton) return;
-  const off = !!tabularToggle?.checked;
-  metarTafButton.disabled = off;
-  metarTafButton.title = off ? "Tabular view doesn't include TAF" : "";
 }
 
 function saveQuery() {
   queryStore.save({
     decoded: decodedToggle?.checked ?? false,
     tabular: tabularToggle?.checked ?? false,
+    taf:     tafToggle?.checked     ?? false,
     hours: hoursSelect?.value ?? "0",
   });
 }
 
-// Turning one of the two format switches on forces the other off.
+// Flipping any one switch enforces the mutex rules, then persists.
 decodedToggle?.addEventListener("change", () => {
   if (decodedToggle.checked && tabularToggle) tabularToggle.checked = false;
-  syncTafButton();
   saveQuery();
 });
 tabularToggle?.addEventListener("change", () => {
-  if (tabularToggle.checked && decodedToggle) decodedToggle.checked = false;
-  syncTafButton();
+  if (tabularToggle.checked) {
+    if (decodedToggle) decodedToggle.checked = false;
+    if (tafToggle)     tafToggle.checked     = false;
+  }
+  saveQuery();
+});
+tafToggle?.addEventListener("change", () => {
+  if (tafToggle.checked && tabularToggle) tabularToggle.checked = false;
   saveQuery();
 });
 hoursSelect?.addEventListener("change", saveQuery);
-
-syncTafButton(); // reflect persisted state on load
 
 form?.addEventListener("submit", (event) => {
   const { ok, invalid } = validateIcaoList(hiddenIds.value);
