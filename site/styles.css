@@ -718,6 +718,18 @@ footer p { margin: 0; }
  * about why Online ↗ stopped returning multi-group results. Set by JS on a
  * fallback response from resolve.php; cleared on the next successful Tier-2
  * call. Hover the link for a plain-English explanation (set via title). */
+/* Separator between adjacent provider links in the chain credit list. CSS-
+ * driven (not text nodes) so JS-reordering the children doesn't have to
+ * shuffle separator nodes around — they just regenerate. The `+ a` selector
+ * also handles the chip case: a busy chip lands BETWEEN two links, so the
+ * second link wouldn't be adjacent to the first; we add a separate rule for
+ * the `a + .tier2-busy + a` chain so the chip-following link still gets one. */
+.tier2-list a + a::before,
+.tier2-list a + .tier2-busy + a::before {
+  content: " · ";
+  color: var(--fg-muted);
+}
+
 /* Per-provider fallback styling. When the chain rolls forward, JS adds
  * .is-fallback to ONLY the specific <a data-provider="..."> link that was
  * throttled / errored — the other provider names render normally. Italic +

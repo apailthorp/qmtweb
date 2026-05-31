@@ -52,9 +52,29 @@ let tier2RetryAt = 0;
 // not when the daily quota resets.
 let tier2CountdownScope = null;
 
+// Reorder the chain list so the sticky-current (last successful) provider is
+// listed first — emphasises which service is actually doing the work right
+// now. CSS separators (` · `) regenerate automatically since they're driven
+// by adjacent-sibling selectors. When `provider` is null/unknown, the list
+// keeps its previous order (no-op).
+function reorderTier2List(provider) {
+  const list = document.getElementById("tier2-list");
+  if (!list || !provider) return;
+  const sticky = list.querySelector(`a[data-provider="${provider}"]`);
+  // Already first → no DOM churn. firstElementChild because there may be
+  // whitespace text nodes between, but inside #tier2-list we wrote the HTML
+  // with no inter-element whitespace specifically so JS can move freely.
+  if (!sticky || list.firstElementChild === sticky) return;
+  list.prepend(sticky);
+}
+
 function markTier2Attribution(state, detail, provider) {
   const el = document.getElementById("tier2-attribution");
   if (!el) return;
+
+  // Reorder first so the sticky provider is at the front. Runs on every
+  // response (live or fallback) so the order tracks the server's view.
+  reorderTier2List(provider);
 
   // Clear all prior per-provider state — idempotent. A second "ok" call after
   // a recovered chain clears successfully even if no prior fallback existed.
@@ -847,8 +867,11 @@ export function initIcaoControl({
       // see which provider was throttled when the failure was provider-driven.
       const tier2 = data?.tier2;
       const provider = data?.tier2_provider;
+      // Always pass the credited provider so the list can reorder to put
+      // whichever service served first — even on "live" responses where
+      // there's no fallback decoration to apply.
       if (tier2 === "live" || tier2 === "off") {
-        markTier2Attribution("ok", null, null);
+        markTier2Attribution("ok", null, provider);
       } else if (tier2 === "fallback") {
         markTier2Attribution("fallback", data?.tier2_detail, provider);
       }
