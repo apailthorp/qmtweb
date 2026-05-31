@@ -12,6 +12,29 @@ declare(strict_types=1);
 require __DIR__ . '/_lib.php';
 
 const NEAREST_DEFAULT = 6;
+// LLM intent cache lifetime. 7 days is the sweet spot: long enough that a
+// frequently-searched ambiguous place (e.g. "Springfield") survives across
+// quota rollovers; short enough that Gemini's interpretation of "King County"
+// can shift if the underlying training data updates. Tuneable here if quota
+// pressure changes.
+const GEMINI_INTENT_TTL = 7 * 86400;
+
+// Stable cache key for a freeform query. Normalised so casing + whitespace
+// variants collide on the same slot. Prefixed so qmtweb-cache entries from
+// other endpoints (Nominatim "geo:…") never alias intent entries.
+function gemini_intent_cache_key(string $q): string {
+    return 'intent:' . strtolower(trim($q));
+}
+
+// Cache-only lookup. Used by the smart-conditional Tier-2 path: if we've
+// served this query before with a richer multi-group intent, we want to
+// prefer that over Tier-1's single guess — but WITHOUT spending a fresh
+// Gemini call. Returns null on miss (no live escalation here; the caller
+// can fall through to gemini_intent() when it wants the live path).
+function gemini_intent_cached_only(string $q): ?array {
+    $cached = cache_get(gemini_intent_cache_key($q), GEMINI_INTENT_TTL);
+    return is_array($cached) && !empty($cached['candidates']) ? $cached : null;
+}
 
 // Tier-2 outcome from the most recent gemini_intent() call. The client uses
 // this to subtly indicate "Gemini is degraded" in the footer attribution —
@@ -97,37 +120,36 @@ function parse_gemini_429_detail(?array $errBody): array {
 $q = trim($_GET['q'] ?? '');
 if ($q === '') json_err('Type a place, ZIP, or airport to search online.', 422);
 
-// Tier 2 (free LLM) with silent fallback to Tier 1 (deterministic). Both tiers
-// now return a list of candidates: 1 for unambiguous queries, 2-3 for ambiguous
-// ones like "WA" (state vs. country code) or "King County" (TX vs. WA).
-$intent     = gemini_intent($q) ?? deterministic_intent($q);
-$count      = max(1, min(10, (int) ($intent['count'] ?? NEAREST_DEFAULT)));
-// Cap server-side regardless of what the LLM returned, so a malformed or
-// malicious Gemini response can't trigger an unbounded fan-out of geocode +
-// aviationweather.gov calls. Matches the documented 2-3 candidate contract.
-$candidates = is_array($intent['candidates'] ?? null)
-    ? array_slice($intent['candidates'], 0, 3)
-    : [];
+// Resolution strategy: Tier-1 (deterministic) first, then a free Tier-2 cache
+// upgrade for known-ambiguous queries, then a live Tier-2 call only if both
+// missed. Honours the scarce free Gemini quota (20/day on 2.5-flash):
+//
+//   1. Tier-1 runs unconditionally. ZIPs and most single-word place names
+//      geocode cleanly and don't need an LLM. (Saves the bulk of calls.)
+//   2. If we have a CACHED Gemini intent for this query, we use it ONLY when
+//      it yields MORE groups than Tier-1 — i.e. multi-group discovery on
+//      previously-seen ambiguous queries ("Springfield", "King County"). No
+//      live call, no quota spent.
+//   3. If we still have no groups (Tier-1 missed AND no useful cache), we
+//      escalate to a live Gemini call. This also goes through gemini_intent's
+//      cache (will re-check + miss, then call live).
+//
+// First-time ambiguous queries still produce a single Tier-1 group until
+// Gemini sees them once and the cache catches the multi-group interpretation.
+$groups = intent_to_groups(deterministic_intent($q));
 
-// Geocode each candidate, collect the nearest stations per location into a
-// group. Silently drop candidates that don't geocode or have no reporters.
-$groups = [];
-foreach ($candidates as $candidate) {
-    if (!is_array($candidate)) continue;
-    $location = null;
-    if (!empty($candidate['zip'])) $location = geocode_place((string) $candidate['zip']);
-    // If the ZIP geocode returned nothing (or there was no ZIP), fall through
-    // to the place name so the candidate still has a chance to resolve.
-    if ($location === null && !empty($candidate['place'])) {
-        $location = geocode_place((string) $candidate['place']);
+$cachedTier2 = gemini_intent_cached_only($q);
+if ($cachedTier2) {
+    $cachedGroups = intent_to_groups($cachedTier2);
+    if (count($cachedGroups) > count($groups)) {
+        $groups = $cachedGroups;
+        gemini_status('live'); // credit Tier-2 even on a cache hit
     }
-    if ($location === null) continue;
-    $stations = nearest_metar_stations($location['lat'], $location['lon'], $count);
-    if (!$stations) continue;
-    $groups[] = [
-        'interpreted' => 'Nearest METAR to ' . $location['label'],
-        'stations'    => $stations,
-    ];
+}
+
+if (!$groups) {
+    $liveTier2 = gemini_intent($q);
+    if ($liveTier2) $groups = intent_to_groups($liveTier2);
 }
 
 if (!$groups) {
@@ -155,6 +177,40 @@ if ($detail) $response['tier2_detail'] = $detail;
 
 header('Cache-Control: no-store');
 json_out($response);
+
+// --- Intent → groups pipeline -------------------------------------------------
+// Both Tier-1 and Tier-2 produce the same shape (`['candidates' => [...], 'count' => N]`).
+// This helper turns either one into the public `[{interpreted, stations[]}, ...]`
+// list by geocoding each candidate and grounding it in live aviationweather.gov
+// METAR data. Capped at 3 candidates server-side so a malformed or malicious
+// Gemini response can't trigger an unbounded fan-out.
+function intent_to_groups(?array $intent): array {
+    if (!$intent) return [];
+    $count      = max(1, min(10, (int) ($intent['count'] ?? NEAREST_DEFAULT)));
+    $candidates = is_array($intent['candidates'] ?? null)
+        ? array_slice($intent['candidates'], 0, 3)
+        : [];
+
+    $groups = [];
+    foreach ($candidates as $candidate) {
+        if (!is_array($candidate)) continue;
+        $location = null;
+        if (!empty($candidate['zip'])) $location = geocode_place((string) $candidate['zip']);
+        // If the ZIP geocode returned nothing (or there was no ZIP), fall through
+        // to the place name so the candidate still has a chance to resolve.
+        if ($location === null && !empty($candidate['place'])) {
+            $location = geocode_place((string) $candidate['place']);
+        }
+        if ($location === null) continue;
+        $stations = nearest_metar_stations($location['lat'], $location['lon'], $count);
+        if (!$stations) continue;
+        $groups[] = [
+            'interpreted' => 'Nearest METAR to ' . $location['label'],
+            'stations'    => $stations,
+        ];
+    }
+    return $groups;
+}
 
 // --- Tier 1: deterministic intent ---------------------------------------------
 // Strip filler, detect a 5-digit ZIP, else treat the remainder as a place name.
@@ -190,9 +246,23 @@ function deterministic_intent(string $q): array {
 // --- Tier 2: Gemini intent extraction (free tier) -----------------------------
 // Returns null (→ Tier 1) when no key, error, or unparseable. NEVER returns a
 // station — only the location to feed the grounded pipeline.
+//
+// File-backed intent cache (7-day TTL): a hit short-circuits the Gemini call
+// entirely so repeated queries don't burn the 20/day free quota. Cache key is
+// the normalised (lowercase, trimmed) query so "Springfield", "  Springfield ",
+// "springfield" all share a slot. We cache only the parsed intent shape, not
+// raw Gemini bytes. On a cache hit gemini_status stays 'live' — the user is
+// getting an LLM-derived result, just one we stored from a prior live call.
 function gemini_intent(string $q): ?array {
     $key = server_secret('GEMINI_API_KEY');
     if (!$key) { gemini_status('off'); return null; }
+
+    $cacheKey = gemini_intent_cache_key($q);
+    $cached = cache_get($cacheKey, GEMINI_INTENT_TTL);
+    if (is_array($cached) && !empty($cached['candidates'])) {
+        gemini_status('live');
+        return $cached;
+    }
 
     $prompt = 'You extract LOCATION candidates from an aviation-weather query. '
         . 'Station identifiers come from a separate live feed — never from you.'
@@ -270,11 +340,13 @@ function gemini_intent(string $q): ?array {
     }
     if (empty($candidates)) { gemini_status('error'); return null; }
 
-    gemini_status('live');
-    return [
+    $result = [
         'candidates' => $candidates,
         'count'      => (int) ($intent['count'] ?? NEAREST_DEFAULT),
     ];
+    cache_set($cacheKey, $result);
+    gemini_status('live');
+    return $result;
 }
 
 // --- Grounded station lookup --------------------------------------------------

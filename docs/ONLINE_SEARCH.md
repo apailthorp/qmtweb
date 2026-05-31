@@ -10,11 +10,20 @@ METAR-reporting stations. Stations are always grounded in
 | Path | Where it runs | What it queries | Fires |
 |---|---|---|---|
 | **Local autocomplete** | Client (JS) | bundled `site/data/airports.json` (~12,409 airports — ICAO / name / city) | On every keystroke ≥2 chars |
-| **Online Tier 1** (deterministic) | Server (PHP) | zippopotam (US ZIPs) + Nominatim (places) + aviationweather.gov bbox (live METARs) | Click Online ↗ / press Enter |
-| **Online Tier 2** (LLM-assisted) | Server (PHP) → Gemini → same grounded geocode + bbox | Gemini extracts intent (place candidates, count); the geocode + station lookup stay grounded | Same click — runs *before* Tier 1, falls back to Tier 1 silently on no key / quota / parse failure |
+| **Online Tier 1** (deterministic) | Server (PHP) | zippopotam (US ZIPs) + Nominatim (places) + aviationweather.gov bbox (live METARs) | Every Online ↗ click |
+| **Online Tier 2 cache** (free upgrade) | Server (PHP) | 7-day file cache of prior Tier-2 intent results | Same click, after Tier-1; preferred when it has more groups |
+| **Online Tier 2 live** (LLM-assisted) | Server (PHP) → Gemini → same grounded geocode + bbox | Gemini extracts intent (place candidates, count); station lookup stays grounded | Only when Tier-1 + cache both miss, OR (historically — pre-1.4.0) on every click |
 
-Local autocomplete is a separate, instant-and-offline path; the two Online tiers
-share the same `resolve.php` endpoint.
+Local autocomplete is a separate, instant-and-offline path; the three Online
+tiers share the same `resolve.php` endpoint.
+
+**Ordering as of v1.4.0**: Tier-1 runs first (saves the bulk of Gemini calls
+since ZIPs and most place names geocode cleanly). The Tier-2 cache then offers
+a free upgrade for known-ambiguous queries — if a prior live Gemini call
+returned multi-group, we re-use that result. Only when both miss do we
+escalate to a live Gemini call. First-time ambiguous queries (e.g. a
+never-seen "Springfield") get a single Tier-1 group until Gemini sees them
+once and the cache catches the multi-group interpretation.
 
 ## Data flow (one Online ↗ click)
 
