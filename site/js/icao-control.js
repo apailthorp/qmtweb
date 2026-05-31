@@ -35,37 +35,59 @@ function describeIcao(icao, lookupByIcao) {
 }
 
 // Subtle footer cue for Tier-2 health. When the most recent Online call fell
-// back (rate-limited / error) we italicize the Gemini attribution, append a
-// small "busy 58s" chip that *counts down in real time*, and surface a
-// plain-English explanation on hover. When the countdown hits zero the chip
+// back (rate-limited / error) we italicize the credited provider's name,
+// append a small "busy 58s" chip that *counts down in real time*, and surface
+// a plain-English explanation on hover. When the countdown hits zero the chip
 // flips to "ready" so the user knows they aren't retrying too early.
-// A successful subsequent call clears everything. State is intentionally NOT
-// persisted across reloads — fresh load, fresh check; the next Online query
-// reasserts the live state.
+//
+// Multi-provider: the credited brand may change between calls as the chain
+// rolls over. The footer rewrites its link text + href on every Online call
+// to reflect whichever provider served (or was last sticky-current). A
+// successful subsequent call clears the degradation styling. State is
+// intentionally NOT persisted across reloads.
 
 // Module-level countdown bookkeeping. Stored here (not inside
-// markGeminiAttribution) so a second invocation cleanly cancels the prior
+// markTier2Attribution) so a second invocation cleanly cancels the prior
 // timer instead of leaving a stale interval running against a removed chip.
-let geminiCountdownTimer = null;
-let geminiRetryAt = 0;
+let tier2CountdownTimer = null;
+let tier2RetryAt = 0;
 // Scope of the current fallback ("per_day" / "per_minute" / "unknown" / null)
 // — drives the post-countdown chip text. We can't say "ready" after a
 // per-day window because Google's retryDelay is a per-request back-off hint,
 // not when the daily quota resets.
-let geminiCountdownScope = null;
+let tier2CountdownScope = null;
 
-function markGeminiAttribution(state, detail) {
-  const el = document.getElementById("gemini-attribution");
+// Update the credited provider's brand text + URL in the footer. Called on
+// every Online response (success OR error-with-tier2-info) so the footer
+// reflects whoever is currently sticky in the chain. No-op if the page hasn't
+// shipped the Tier-2 attribution span (defensive).
+function applyTier2Brand(attribution) {
+  const el = document.getElementById("tier2-attribution");
+  if (!el || !attribution) return;
+  const link = el.querySelector("a");
+  if (!link) return;
+  if (attribution.name && link.textContent !== attribution.name) {
+    link.textContent = attribution.name;
+  }
+  if (attribution.url && link.href !== attribution.url) {
+    link.href = attribution.url;
+  }
+}
+
+function markTier2Attribution(state, detail, attribution) {
+  const el = document.getElementById("tier2-attribution");
   if (!el) return;
   const link = el.querySelector("a");
 
-  // Always cancel any prior countdown + chip before re-applying. Idempotent:
-  // a second "ok" state clears successfully even if no prior fallback existed.
-  if (geminiCountdownTimer) {
-    clearInterval(geminiCountdownTimer);
-    geminiCountdownTimer = null;
+  // Always update brand + clean prior decoration first — idempotent. A second
+  // "ok" call from a recovered chain clears successfully even if no prior
+  // fallback existed.
+  applyTier2Brand(attribution);
+  if (tier2CountdownTimer) {
+    clearInterval(tier2CountdownTimer);
+    tier2CountdownTimer = null;
   }
-  el.querySelector(".gemini-busy")?.remove();
+  el.querySelector(".tier2-busy")?.remove();
 
   if (state !== "fallback") {
     el.classList.remove("is-fallback");
@@ -118,7 +140,7 @@ function markGeminiAttribution(state, detail) {
 
   // Build the chip element once; we mutate its textContent on each tick.
   const chip = document.createElement("span");
-  chip.className = "gemini-busy";
+  chip.className = "tier2-busy";
   el.append(chip);
 
   // If we know the retry window, anchor a wall-clock deadline and tick.
@@ -130,32 +152,32 @@ function markGeminiAttribution(state, detail) {
     ? Math.max(0, detail.retry_after_seconds)
     : null;
   if (retrySecs === null) {
-    // No retry info from Google — show a static chip, no countdown.
+    // No retry info from the provider — show a static chip, no countdown.
     chip.textContent = " · busy";
     return;
   }
-  geminiCountdownScope = scope;
-  geminiRetryAt = Date.now() + retrySecs * 1000;
-  tickGeminiCountdown();
-  geminiCountdownTimer = setInterval(tickGeminiCountdown, 1000);
+  tier2CountdownScope = scope;
+  tier2RetryAt = Date.now() + retrySecs * 1000;
+  tickTier2Countdown();
+  tier2CountdownTimer = setInterval(tickTier2Countdown, 1000);
 }
 
 // One tick of the busy/ready countdown. Reads the current fallback state
-// from the DOM so an external clear (markGeminiAttribution("ok", ...) or a
+// from the DOM so an external clear (markTier2Attribution("ok", ...) or a
 // page-level reset) silently stops the interval on the next tick instead of
 // fighting with the chip.
-function tickGeminiCountdown() {
-  const el = document.getElementById("gemini-attribution");
+function tickTier2Countdown() {
+  const el = document.getElementById("tier2-attribution");
   if (!el || !el.classList.contains("is-fallback")) {
-    if (geminiCountdownTimer) {
-      clearInterval(geminiCountdownTimer);
-      geminiCountdownTimer = null;
+    if (tier2CountdownTimer) {
+      clearInterval(tier2CountdownTimer);
+      tier2CountdownTimer = null;
     }
     return;
   }
-  const chip = el.querySelector(".gemini-busy");
+  const chip = el.querySelector(".tier2-busy");
   if (!chip) return;
-  const remainingMs = geminiRetryAt - Date.now();
+  const remainingMs = tier2RetryAt - Date.now();
   if (remainingMs <= 0) {
     // Predicted window has passed. For per-minute quotas that means a slot
     // is genuinely free → "ready". For per-day, Google's retryDelay was a
@@ -164,9 +186,9 @@ function tickGeminiCountdown() {
     // "daily limit" to indicate they'll likely keep getting 429 until the
     // actual reset (midnight Pacific). 'unknown' scope is treated like
     // per-minute (best-effort) because we have no better signal.
-    chip.textContent = geminiCountdownScope === "per_day" ? " · daily limit" : " · ready";
-    clearInterval(geminiCountdownTimer);
-    geminiCountdownTimer = null;
+    chip.textContent = tier2CountdownScope === "per_day" ? " · daily limit" : " · ready";
+    clearInterval(tier2CountdownTimer);
+    tier2CountdownTimer = null;
   } else {
     chip.textContent = ` · busy ${humanRetry(Math.ceil(remainingMs / 1000))}`;
   }
@@ -825,16 +847,23 @@ export function initIcaoControl({
       const res = await fetch(`./api/resolve.php?q=${encodeURIComponent(q)}`, { signal: onlineAbort.signal });
       if (seq !== onlineSeq) return;
       const data = await res.json().catch(() => null);
-      // Subtle footer cue: italicize the Gemini attribution + show a small
-      // "busy ~7s" chip when Tier-2 fell back on this call. Reset to neutral
-      // on a successful Tier-2 response. Quota detail (scope, limit, retry
-      // window) is parsed out of Gemini's 429 body server-side — see
-      // resolve.php's parse_gemini_429_detail().
+      // Subtle footer cue: italicize the credited provider's name + show a
+      // small "busy ~7s" chip when Tier-2 fell back on this call. Reset to
+      // neutral on a successful Tier-2 response. The credited brand may swap
+      // between providers as the chain rolls over — `data.tier2_attribution`
+      // carries the brand text + URL to render in the footer link. Quota
+      // detail (scope, limit, retry window) comes from server-side parsing
+      // of provider 429 bodies (Gemini's google.rpc.RetryInfo is the richest).
+      //
+      // Fires on both success (data) and structured errors (data with `error`),
+      // since the server includes tier2 metadata on 404s too so the user can
+      // see "Gemini busy" when the failure was provider-driven.
       const tier2 = data?.tier2;
+      const attribution = data?.tier2_attribution;
       if (tier2 === "live" || tier2 === "off") {
-        markGeminiAttribution("ok");
+        markTier2Attribution("ok", null, attribution);
       } else if (tier2 === "fallback") {
-        markGeminiAttribution("fallback", data?.tier2_detail);
+        markTier2Attribution("fallback", data?.tier2_detail, attribution);
       }
       if (!res.ok || !data) {
         renderOnlineGroups([]);

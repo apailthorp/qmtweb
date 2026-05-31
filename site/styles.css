@@ -714,10 +714,10 @@ footer {
  * about why Online ↗ stopped returning multi-group results. Set by JS on a
  * fallback response from resolve.php; cleared on the next successful Tier-2
  * call. Hover the link for a plain-English explanation (set via title). */
-.gemini-attribution.is-fallback {
+.tier2-attribution.is-fallback {
   font-style: italic;
 }
-.gemini-attribution.is-fallback a {
+.tier2-attribution.is-fallback a {
   text-decoration-style: dotted;
 }
 /* Small "busy ~7s" chip appended after the parenthetical when Tier-2 is in
@@ -725,7 +725,7 @@ footer {
  * the kind of thing a user notices on a second look. Stays roman (not
  * italic) so the chip text is more legible than the surrounding italicised
  * credit at small sizes. */
-.gemini-busy {
+.tier2-busy {
   font-style: normal;
   font-size: 0.85em;
   color: var(--fg-muted);

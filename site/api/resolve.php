@@ -3,187 +3,305 @@
 // "airport with METAR nearest to 98624" or "Ilwaco metar", resolves it to a
 // location, and returns the nearest live METAR-reporting stations.
 //
-// GROUNDED: the LLM (Tier 2) only parses intent — station IDs ALWAYS come from
-// the live aviationweather.gov bbox response, never the model. If GEMINI_API_KEY
-// is unset / quota-spent / errors, it silently falls back to the deterministic
-// Tier-1 parser.
+// GROUNDED: every Tier-2 LLM provider only parses intent — station IDs ALWAYS
+// come from the live aviationweather.gov bbox response, never the model. When
+// no provider is configured / all are throttled / all error, it silently falls
+// back to the deterministic Tier-1 parser.
+//
+// Architecture (v1.4.0):
+//
+//   site/api/_lib.php             — shared helpers (HTTP, cache, intent prompt,
+//                                    normalize_intent, OpenAI-compat caller,
+//                                    sticky-state, stats logging)
+//   site/api/providers/intent-*.php — one adapter per Tier-2 provider
+//   site/api/resolve.php          — this file: Tier-1 first, then cache, then
+//                                    walk the sticky-current Tier-2 chain
+//
+// Tier-2 provider chain (sticky-current):
+//   1. Stay on whoever last worked ('current' in qmtweb-tier2-state.json).
+//   2. If current returns null (no key / 429 / error), walk the preference
+//      list in PROVIDER_CHAIN order, skipping providers already tried this
+//      request. First non-null result wins.
+//   3. On a successful rollover, persist the new current so subsequent
+//      requests start from there. Reasoning: quota distribution and the
+//      operator's stated "no reason not to stay there" preference.
+//
+// Excluded by policy: Grok (X.ai) is dis-preferred. Groq (Sunnyvale, not Elon)
+// is included.
 
 declare(strict_types=1);
 require __DIR__ . '/_lib.php';
+require __DIR__ . '/providers/intent-gemini.php';
+require __DIR__ . '/providers/intent-openrouter.php';
+require __DIR__ . '/providers/intent-cerebras.php';
+require __DIR__ . '/providers/intent-groq.php';
 
-const NEAREST_DEFAULT = 6;
-// LLM intent cache lifetime. 7 days is the sweet spot: long enough that a
-// frequently-searched ambiguous place (e.g. "Springfield") survives across
-// quota rollovers; short enough that Gemini's interpretation of "King County"
-// can shift if the underlying training data updates. Tuneable here if quota
-// pressure changes.
-const GEMINI_INTENT_TTL = 7 * 86400;
-
-// Stable cache key for a freeform query. Normalised so casing + whitespace
-// variants collide on the same slot. Prefixed so qmtweb-cache entries from
-// other endpoints (Nominatim "geo:…") never alias intent entries.
-function gemini_intent_cache_key(string $q): string {
-    return 'intent:' . strtolower(trim($q));
-}
-
-// Cache-only lookup. Used by the smart-conditional Tier-2 path: if we've
-// served this query before with a richer multi-group intent, we want to
-// prefer that over Tier-1's single guess — but WITHOUT spending a fresh
-// Gemini call. Returns null on miss (no live escalation here; the caller
-// can fall through to gemini_intent() when it wants the live path).
-function gemini_intent_cached_only(string $q): ?array {
-    $cached = cache_get(gemini_intent_cache_key($q), GEMINI_INTENT_TTL);
-    return is_array($cached) && !empty($cached['candidates']) ? $cached : null;
-}
-
-// Tier-2 outcome from the most recent gemini_intent() call. The client uses
-// this to subtly indicate "Gemini is degraded" in the footer attribution —
-// see styles.css `.gemini-attribution.is-fallback` and the runOnlineSearch
-// handler in icao-control.js. Values:
-//   'off'       — no GEMINI_API_KEY configured; Tier-2 wasn't even attempted
-//   'live'      — Gemini returned a usable intent
-//   'throttled' — Gemini responded with 429 (rate-limited)
-//   'error'     — any other failure (5xx, network, unparseable response)
-// Mapped to a coarser 'live' / 'fallback' / 'off' for the client.
-function gemini_status(?string $newValue = null): string {
-    static $value = 'off';
-    if ($newValue !== null) $value = $newValue;
-    return $value;
-}
-
-// Structured detail captured from a 429 response (when available). Populated by
-// gemini_intent() from the google.rpc.QuotaFailure / google.rpc.RetryInfo blocks
-// inside Gemini's error body. Shape:
-//   ['scope' => 'per_day'|'per_minute'|'unknown',
-//    'limit' => int|null,
-//    'retry_after_seconds' => int|null]
-// The client uses this to render "rate-limited; retry in ~7s" next to the
-// Gemini credit, so the user knows what's happening and when it might resolve.
-function gemini_detail(?array $newValue = null): ?array {
-    static $value = null;
-    if ($newValue !== null) $value = $newValue;
-    return $value;
-}
-
-// Pull what we can out of a Gemini 429 body. Tolerates missing fields: every
-// path may be absent on edge-case error shapes (older API versions, partial
-// errors). Returns the structured shape gemini_detail() expects.
+// Preference order — used for first-ever calls (no sticky state) and as the
+// roll-over walk order. Each entry: provider name (matches state file values)
+// → intent function + status accessor + detail accessor + attribution.
 //
-// IMPORTANT: `retry_after_seconds` is Google's google.rpc.RetryInfo hint —
-// for per-minute quotas it's meaningful (wait this long and the slot frees);
-// for per-day quotas it's just an inter-request back-off suggestion. The
-// daily quota itself usually resets at midnight Pacific time, not after the
-// retryDelay elapses. The client uses `scope` to pick the right end-state
-// text so we don't claim "ready" while still over the daily limit.
-function parse_gemini_429_detail(?array $errBody): array {
-    $detail = [
-        'scope'               => 'unknown',
-        'limit'               => null,
-        'retry_after_seconds' => null,
-        'quota_id'            => null,
-        // Raw human-readable string from Google's error.message — included
-        // so the client can surface the unmodified upstream text on hover.
-        'message'             => is_string($errBody['error']['message'] ?? null)
-            ? (string) $errBody['error']['message']
-            : null,
-    ];
-    $details = $errBody['error']['details'] ?? null;
-    if (!is_array($details)) return $detail;
+// Order rationale:
+//   1. Gemini — richest 429 detail surfacing; smallest quota so it's the
+//      "canary" we'd rather burn first when no current is set
+//   2. OpenRouter — operator preference; aggregator with rotating free roster
+//   3. Cerebras — operator preference; generous fixed free quota
+//   4. Groq — also fine; round-trip latency is great when available
+const PROVIDER_CHAIN = [
+    [
+        'name'          => 'gemini',
+        'intent_fn'     => 'gemini_intent',
+        'status_fn'     => 'gemini_status',
+        'detail_fn'     => 'gemini_detail',
+        'attribution'   => GEMINI_ATTRIBUTION,
+    ],
+    [
+        'name'          => 'openrouter',
+        'intent_fn'     => 'openrouter_intent',
+        'status_fn'     => 'openrouter_status',
+        'detail_fn'     => 'openrouter_detail',
+        'attribution'   => OPENROUTER_ATTRIBUTION,
+    ],
+    [
+        'name'          => 'cerebras',
+        'intent_fn'     => 'cerebras_intent',
+        'status_fn'     => 'cerebras_status',
+        'detail_fn'     => 'cerebras_detail',
+        'attribution'   => CEREBRAS_ATTRIBUTION,
+    ],
+    [
+        'name'          => 'groq',
+        'intent_fn'     => 'groq_intent',
+        'status_fn'     => 'groq_status',
+        'detail_fn'     => 'groq_detail',
+        'attribution'   => GROQ_ATTRIBUTION,
+    ],
+];
 
-    foreach ($details as $d) {
-        if (!is_array($d)) continue;
-        $type = (string) ($d['@type'] ?? '');
-
-        // RetryInfo carries the suggested back-off as e.g. "7s" or "7.42s".
-        if (str_contains($type, 'RetryInfo')) {
-            $delay = (string) ($d['retryDelay'] ?? '');
-            if (preg_match('/^(\d+(?:\.\d+)?)s$/', $delay, $m)) {
-                $detail['retry_after_seconds'] = (int) ceil((float) $m[1]);
-            }
-        }
-
-        // QuotaFailure tells us WHICH quota — per-day vs per-minute — and the
-        // numeric limit. We expose the first violation; multi-violation 429s
-        // are rare in this caller's request pattern.
-        if (str_contains($type, 'QuotaFailure') && !empty($d['violations'][0]) && is_array($d['violations'][0])) {
-            $v = $d['violations'][0];
-            $qid = (string) ($v['quotaId'] ?? '');
-            $detail['quota_id'] = $qid !== '' ? $qid : null;
-            if (stripos($qid, 'PerDay')    !== false) $detail['scope'] = 'per_day';
-            elseif (stripos($qid, 'PerMinute') !== false) $detail['scope'] = 'per_minute';
-            if (isset($v['quotaValue'])) $detail['limit'] = (int) $v['quotaValue'];
-        }
-    }
-    return $detail;
-}
+$reqStartMs = (int) (microtime(true) * 1000);
 
 $q = trim($_GET['q'] ?? '');
 if ($q === '') json_err('Type a place, ZIP, or airport to search online.', 422);
 
-// Resolution strategy: Tier-1 (deterministic) first, then a free Tier-2 cache
-// upgrade for known-ambiguous queries, then a live Tier-2 call only if both
-// missed. Honours the scarce free Gemini quota (20/day on 2.5-flash):
-//
-//   1. Tier-1 runs unconditionally. ZIPs and most single-word place names
-//      geocode cleanly and don't need an LLM. (Saves the bulk of calls.)
-//   2. If we have a CACHED Gemini intent for this query, we use it ONLY when
-//      it yields MORE groups than Tier-1 — i.e. multi-group discovery on
-//      previously-seen ambiguous queries ("Springfield", "King County"). No
-//      live call, no quota spent.
-//   3. If we still have no groups (Tier-1 missed AND no useful cache), we
-//      escalate to a live Gemini call. This also goes through gemini_intent's
-//      cache (will re-check + miss, then call live).
-//
-// First-time ambiguous queries still produce a single Tier-1 group until
-// Gemini sees them once and the cache catches the multi-group interpretation.
-$groups = intent_to_groups(deterministic_intent($q));
+// Tier-1 first — saves the bulk of LLM quota.
+$tier1Intent = deterministic_intent($q);
+$groups = intent_to_groups($tier1Intent);
+$tier1GroupCount = count($groups);
 
+// Tier-2 cache upgrade — preferred over Tier-1 when richer (multi-group).
+$cacheHit = false;
 $cachedTier2 = gemini_intent_cached_only($q);
 if ($cachedTier2) {
     $cachedGroups = intent_to_groups($cachedTier2);
     if (count($cachedGroups) > count($groups)) {
         $groups = $cachedGroups;
-        gemini_status('live'); // credit Tier-2 even on a cache hit
+        $cacheHit = true;
+    }
+}
+
+// Tier-2 live call — only when Tier-1 + cache both came up empty.
+$tier2Used   = null;
+$tier2Status = null;
+$tier2Detail = null;
+if (!$groups) {
+    $orchestration = run_tier2_chain($q);
+    if ($orchestration['intent']) {
+        $groups = intent_to_groups($orchestration['intent']);
+    }
+    $tier2Used   = $orchestration['provider'];
+    $tier2Status = $orchestration['status'];
+    $tier2Detail = $orchestration['detail'];
+}
+
+// If cache hit served the result, credit whichever provider is currently
+// sticky (we re-used a cached intent — but the user is still seeing Tier-2
+// quality, and crediting the current provider keeps the footer consistent
+// across consecutive identical queries).
+if ($cacheHit && $tier2Used === null) {
+    $state = tier2_state_load();
+    $stickyName = $state['current'];
+    if ($stickyName) {
+        $tier2Used   = $stickyName;
+        $tier2Status = 'live';
+    } else {
+        // First-ever query, cache hit but no sticky yet — credit the chain head.
+        $tier2Used   = PROVIDER_CHAIN[0]['name'];
+        $tier2Status = 'live';
     }
 }
 
 if (!$groups) {
-    $liveTier2 = gemini_intent($q);
-    if ($liveTier2) $groups = intent_to_groups($liveTier2);
+    qmtweb_stats_emit([
+        'q_hash'          => qmtweb_stats_hash_query($q),
+        'q_len'           => strlen($q),
+        'tier1_groups'    => $tier1GroupCount,
+        'tier2_used'      => $tier2Used,
+        'tier2_status'    => $tier2Status,
+        'tier2_cache_hit' => $cacheHit,
+        'retry_after'     => $tier2Detail['retry_after_seconds'] ?? null,
+        'latency_ms'      => (int) (microtime(true) * 1000) - $reqStartMs,
+    ]);
+    // Even on a 404, carry tier2 status so the footer can italicise + show the
+    // 429 detail when applicable. Without this the user sees "couldn't work
+    // out a location" with no hint that Tier-2 is throttled and they're stuck
+    // on Tier-1-only resolution.
+    $errResp = [
+        'error' => "Couldn't work out a location from \"$q\". Try a city or 5-digit ZIP.",
+    ];
+    if ($tier2Status === 'throttled' || $tier2Status === 'error') {
+        $errResp['tier2']             = 'fallback';
+        $errResp['tier2_provider']    = $tier2Used;
+        $errResp['tier2_attribution'] = $tier2Used ? provider_attribution($tier2Used) : null;
+        if ($tier2Detail) $errResp['tier2_detail'] = $tier2Detail;
+    }
+    header('Cache-Control: no-store');
+    json_out($errResp, 404);
 }
 
-if (!$groups) {
-    json_err("Couldn't work out a location from \"$q\". Try a city or 5-digit ZIP.", 404);
-}
-
-// Coarse public mapping — the client only needs to know if Tier-2 was
-// degraded (`fallback`) so it can italicize the Gemini attribution. The full
-// 'throttled' / 'error' / 'off' / 'live' detail stays server-side; "off" is
-// indistinguishable from "live" in the UI because Gemini-was-never-asked is
-// not a degradation worth surfacing.
-$tier2Raw    = gemini_status();
-$tier2Public = match ($tier2Raw) {
-    'live'      => 'live',
-    'off'       => 'off',
-    'throttled' => 'fallback',
-    default     => 'fallback', // 'error'
+// --- Build response -----------------------------------------------------------
+// `tier2` is the coarse public state for the footer-italic indicator:
+//   'live'     — Tier-2 served (live or cached, any provider)
+//   'fallback' — a Tier-2 provider was attempted and failed (degraded)
+//   'off'      — Tier-2 wasn't called this request (Tier-1 sufficed) OR all
+//                providers have no key configured
+$tier2Public = match (true) {
+    $tier2Status === 'live'                   => 'live',
+    $tier2Status === 'throttled'              => 'fallback',
+    $tier2Status === 'error'                  => 'fallback',
+    $tier2Status === null && !$cacheHit       => 'off',
+    default                                   => 'off',
 };
 
-$response = ['groups' => $groups, 'tier2' => $tier2Public];
-// Only attach detail when we actually have parsed quota info (throttled
-// state). 'error' and 'live' / 'off' carry no detail to surface.
-$detail = $tier2Raw === 'throttled' ? gemini_detail() : null;
-if ($detail) $response['tier2_detail'] = $detail;
+// Resolve the attribution metadata for whichever provider gets footer credit.
+// On a Tier-2 fallback, we still credit the currently-sticky provider (the
+// one we *expected* to serve) — the italic + chip already communicate that
+// it failed, no need to swap the brand to nothing.
+$creditedProvider = $tier2Used ?? (tier2_state_load()['current'] ?? PROVIDER_CHAIN[0]['name']);
+$attribution = provider_attribution($creditedProvider);
+
+$response = [
+    'groups'             => $groups,
+    'tier2'              => $tier2Public,
+    'tier2_provider'     => $creditedProvider,
+    'tier2_attribution'  => $attribution,
+];
+if ($tier2Detail) $response['tier2_detail'] = $tier2Detail;
+
+// Stats emission — every successful resolve gets one line. Failure path
+// emits its own line above so we capture 404s too.
+qmtweb_stats_emit([
+    'q_hash'          => qmtweb_stats_hash_query($q),
+    'q_len'           => strlen($q),
+    'tier1_groups'    => $tier1GroupCount,
+    'tier2_used'      => $tier2Used,
+    'tier2_status'    => $tier2Status,
+    'tier2_cache_hit' => $cacheHit,
+    'retry_after'     => $tier2Detail['retry_after_seconds'] ?? null,
+    'latency_ms'      => (int) (microtime(true) * 1000) - $reqStartMs,
+]);
 
 header('Cache-Control: no-store');
 json_out($response);
+
+// --- Orchestration ------------------------------------------------------------
+// Walk the chain starting from the sticky current. On 429 / error, move to
+// the next provider in PROVIDER_CHAIN order (skipping already-tried). First
+// non-null result becomes the new sticky current.
+//
+// Returns:
+//   ['intent' => ?array, 'provider' => ?string, 'status' => ?string, 'detail' => ?array]
+// 'intent' is null when every provider in the chain returned null.
+function run_tier2_chain(string $q): array {
+    $state = tier2_state_load();
+    $startName = $state['current']; // null on first-ever call
+
+    // Build ordered chain: sticky current first (if set + valid), then the
+    // remaining providers in PROVIDER_CHAIN order. Each provider tried at
+    // most once per request.
+    $chainOrder = build_chain_order($startName);
+
+    // Capture the FIRST provider's failure detail so the client can render
+    // the fallback indicator with rich info (Gemini's 429 detail surfaces here
+    // when Gemini is the sticky current — most common case).
+    $firstFailStatus   = null;
+    $firstFailDetail   = null;
+    $firstFailProvider = null;
+
+    foreach ($chainOrder as $entry) {
+        $intent = call_user_func($entry['intent_fn'], $q);
+        $status = call_user_func($entry['status_fn']);
+        $detail = call_user_func($entry['detail_fn']);
+
+        if ($intent !== null) {
+            // Success — update sticky state if this isn't already the current.
+            // 'from' on the rollover record is the ORIGINAL sticky (or '(none)'
+            // on first-ever); intermediate failed probes are implicit in the
+            // gap between rollover entries.
+            if ($state['current'] !== $entry['name']) {
+                $reason = $startName ? 'rollover-from-' . $startName : 'initial';
+                $state = tier2_state_record_rollover(
+                    $state,
+                    $startName ?? '(none)',
+                    $entry['name'],
+                    $reason
+                );
+                tier2_state_save($state);
+            }
+            return [
+                'intent'   => $intent,
+                'provider' => $entry['name'],
+                'status'   => $status, // 'live'
+                'detail'   => null,
+            ];
+        }
+
+        if ($firstFailProvider === null) {
+            $firstFailStatus   = $status;
+            $firstFailDetail   = $detail;
+            $firstFailProvider = $entry['name'];
+        }
+    }
+
+    // Every provider returned null — surface the FIRST attempted provider's
+    // detail (most actionable for the user — that's the one we *expected*
+    // to serve and want to explain).
+    return [
+        'intent'   => null,
+        'provider' => $firstFailProvider,
+        'status'   => $firstFailStatus ?? 'error',
+        'detail'   => $firstFailDetail,
+    ];
+}
+
+// Reorder PROVIDER_CHAIN so the sticky current comes first (if it's a known
+// provider). Unknown / null current → use PROVIDER_CHAIN order as-is.
+function build_chain_order(?string $currentName): array {
+    $rest = [];
+    $first = null;
+    foreach (PROVIDER_CHAIN as $entry) {
+        if ($currentName !== null && $entry['name'] === $currentName) {
+            $first = $entry;
+        } else {
+            $rest[] = $entry;
+        }
+    }
+    return $first ? array_merge([$first], $rest) : $rest;
+}
+
+// Look up the attribution block for a provider name. Falls back to the head
+// of the chain when the name is unknown (defensive — stale state file etc.).
+function provider_attribution(string $name): array {
+    foreach (PROVIDER_CHAIN as $entry) {
+        if ($entry['name'] === $name) return $entry['attribution'];
+    }
+    return PROVIDER_CHAIN[0]['attribution'];
+}
 
 // --- Intent → groups pipeline -------------------------------------------------
 // Both Tier-1 and Tier-2 produce the same shape (`['candidates' => [...], 'count' => N]`).
 // This helper turns either one into the public `[{interpreted, stations[]}, ...]`
 // list by geocoding each candidate and grounding it in live aviationweather.gov
 // METAR data. Capped at 3 candidates server-side so a malformed or malicious
-// Gemini response can't trigger an unbounded fan-out.
+// model response can't trigger an unbounded fan-out.
 function intent_to_groups(?array $intent): array {
     if (!$intent) return [];
     $count      = max(1, min(10, (int) ($intent['count'] ?? NEAREST_DEFAULT)));
@@ -241,112 +359,6 @@ function deterministic_intent(string $q): array {
         'candidates' => [['zip' => '', 'place' => $place !== '' ? $place : $q]],
         'count'      => NEAREST_DEFAULT,
     ];
-}
-
-// --- Tier 2: Gemini intent extraction (free tier) -----------------------------
-// Returns null (→ Tier 1) when no key, error, or unparseable. NEVER returns a
-// station — only the location to feed the grounded pipeline.
-//
-// File-backed intent cache (7-day TTL): a hit short-circuits the Gemini call
-// entirely so repeated queries don't burn the 20/day free quota. Cache key is
-// the normalised (lowercase, trimmed) query so "Springfield", "  Springfield ",
-// "springfield" all share a slot. We cache only the parsed intent shape, not
-// raw Gemini bytes. On a cache hit gemini_status stays 'live' — the user is
-// getting an LLM-derived result, just one we stored from a prior live call.
-function gemini_intent(string $q): ?array {
-    $key = server_secret('GEMINI_API_KEY');
-    if (!$key) { gemini_status('off'); return null; }
-
-    $cacheKey = gemini_intent_cache_key($q);
-    $cached = cache_get($cacheKey, GEMINI_INTENT_TTL);
-    if (is_array($cached) && !empty($cached['candidates'])) {
-        gemini_status('live');
-        return $cached;
-    }
-
-    $prompt = 'You extract LOCATION candidates from an aviation-weather query. '
-        . 'Station identifiers come from a separate live feed — never from you.'
-        . "\n\n"
-        . 'Return ONLY JSON matching {"candidates":[{"zip":"","place":""}],"count":6}.'
-        . "\n"
-        . '- "zip": 5-digit US ZIP or "".' . "\n"
-        . '- "place": a city/county/region. Always include the state OR country '
-        . 'when more than one place shares the name. Use postal-style: '
-        . '"King County, WA" not "King County, Washington".' . "\n"
-        . '- "count": stations per candidate (default 6).' . "\n\n"
-        . 'When the query could refer to multiple real places worldwide, return '
-        . '2-3 candidates covering the most plausible. List the strongest first. '
-        . 'Otherwise return a single candidate.'
-        . "\n\n"
-        . 'Examples:' . "\n"
-        . '- "King County" → [{"place":"King County, WA"},{"place":"King County, TX"}]' . "\n"
-        . '- "WA" → [{"place":"Washington, USA"},{"place":"Western Australia, AU"}]' . "\n"
-        . '- "Springfield" → [{"place":"Springfield, IL"},{"place":"Springfield, MO"},{"place":"Springfield, MA"}]' . "\n"
-        . '- "Boring" → [{"place":"Boring, OR"},{"place":"Boring, MD"}]' . "\n"
-        . '- "Ilwaco" → [{"place":"Ilwaco, WA"}]' . "\n"
-        . '- "98624" → [{"zip":"98624","place":""}]' . "\n"
-        . '- "where can I land near Spokane" → [{"place":"Spokane, WA"}]' . "\n\n"
-        . 'Do NOT name any airport or station. Query: ' . $q;
-
-    $payload = [
-        'contents'         => [['parts' => [['text' => $prompt]]]],
-        'generationConfig' => ['responseMimeType' => 'application/json', 'temperature' => 0],
-    ];
-    // Free-tier model. Google rotates which models are on the free tier (e.g.
-    // gemini-2.0-flash had its free quota set to 0 in May 2026; gemini-2.5-flash
-    // is the current free-tier default). Re-verify on key setup if Tier 2 stops
-    // firing — a 429 with `limit: 0` here usually means the model has rotated.
-    //
-    // GEMINI_MODEL override: set `GEMINI_MODEL` in qmtweb-secrets.php (or env)
-    // to swap models without a code deploy. Falls back to the hard-coded default
-    // when unset. Whitespace is trimmed so a stray newline in the secrets file
-    // doesn't produce a 404 from the model endpoint.
-    $model = trim((string) (server_secret('GEMINI_MODEL') ?? 'gemini-2.5-flash'));
-    if ($model === '') $model = 'gemini-2.5-flash';
-    $url = 'https://generativelanguage.googleapis.com/v1beta/models/'
-        . rawurlencode($model) . ':generateContent';
-
-    // Pass the key in the x-goog-api-key header (Google's preferred method) rather
-    // than a ?key= URL param, so it never lands in server/proxy access logs.
-    $status = 0; $errBody = null;
-    $resp = http_post_json($url, $payload, ['x-goog-api-key: ' . $key], HTTP_TIMEOUT, $status, $errBody);
-    // Classify the outcome so the client can subtly indicate "Tier-2 fell back"
-    // in the footer. 429 is the common case the user notices ("multi-group
-    // results stopped working"); other failures collapse to a single 'error'.
-    if ($status === 429) {
-        gemini_status('throttled');
-        gemini_detail(parse_gemini_429_detail($errBody));
-        return null;
-    }
-    if (!$resp) { gemini_status('error'); return null; }
-    $text = $resp['candidates'][0]['content']['parts'][0]['text'] ?? null;
-    if (!$text) { gemini_status('error'); return null; }
-
-    $intent = json_decode($text, true);
-    if (!is_array($intent)) { gemini_status('error'); return null; }
-
-    // Clean each candidate: keep only ones with a usable ZIP or place. Trim
-    // whitespace and validate the ZIP format. Drop empties so the caller can
-    // fall back to Tier-1 when Gemini returns nothing actionable.
-    $raw = is_array($intent['candidates'] ?? null) ? $intent['candidates'] : [];
-    $candidates = [];
-    foreach ($raw as $c) {
-        if (!is_array($c)) continue;
-        $zip = (string) ($c['zip'] ?? '');
-        $zip = preg_match('/^\d{5}$/', $zip) ? $zip : '';
-        $place = is_string($c['place'] ?? null) ? trim($c['place']) : '';
-        if ($zip === '' && $place === '') continue;
-        $candidates[] = ['zip' => $zip, 'place' => $place];
-    }
-    if (empty($candidates)) { gemini_status('error'); return null; }
-
-    $result = [
-        'candidates' => $candidates,
-        'count'      => (int) ($intent['count'] ?? NEAREST_DEFAULT),
-    ];
-    cache_set($cacheKey, $result);
-    gemini_status('live');
-    return $result;
 }
 
 // --- Grounded station lookup --------------------------------------------------

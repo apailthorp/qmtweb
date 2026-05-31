@@ -67,6 +67,48 @@ The bundle was chosen over a live API (AviationStack, aviationweather.gov statio
 
 The realistic way to add hybrid live search later is a small **server-side proxy** (AccuWeb runs PHP, so a `site/api/*.php` shim is the path of least resistance), with keys living in the PHP file (server-side) and a pluggable provider interface in [site/js/search.js](site/js/search.js).
 
+## Tier-2 LLM providers (Online ↗ natural-language search)
+
+The Online ↗ button calls a sticky-current chain of **free-tier** LLM providers
+to extract location intent from freeform queries ("airports near Spokane",
+"King County"). Stations themselves always come from
+[aviationweather.gov](https://aviationweather.gov)'s live METAR feed — providers
+only parse intent, never invent stations.
+
+**Chain** (in `site/api/resolve.php` `PROVIDER_CHAIN`): the orchestrator stays
+on whichever provider last worked and rolls forward only on 429 / error.
+
+| Provider | Adapter | Free-tier terms (verify) | Attribution required |
+|---|---|---|---|
+| [Google Gemini](https://ai.google.dev/) | [`providers/intent-gemini.php`](site/api/providers/intent-gemini.php) | ~20 req/day, ~20 req/min on `gemini-2.5-flash` | Yes (footer) |
+| [OpenRouter](https://openrouter.ai/) | [`providers/intent-openrouter.php`](site/api/providers/intent-openrouter.php) | Per-model RPM/RPD on `:free` SKUs (rotating roster) | Yes (footer) |
+| [Cerebras](https://www.cerebras.ai/) | [`providers/intent-cerebras.php`](site/api/providers/intent-cerebras.php) | ~30 RPM / ~14k RPD on `llama3.1-8b` | Yes (footer) |
+| [Groq](https://groq.com/) | [`providers/intent-groq.php`](site/api/providers/intent-groq.php) | ~30 RPM / ~14k RPD on `llama-3.1-8b-instant` | Yes (footer) |
+
+The footer credits **whichever provider served the most recent Online ↗ call**
+(rolls over with the chain). The site has no fall-back display when the chain
+fully fails — the deterministic Tier-1 parser handles ZIPs and recognised
+place names without any LLM.
+
+**Groq ≠ Grok.** Groq is a Sunnyvale chip company offering free Llama inference.
+Grok is X.ai's LLM (an Elon Musk product) and is **excluded by policy** from
+this site. The naming similarity catches contributors out — double-check API
+endpoint hostnames when adding/modifying adapters.
+
+**Keys** live in `qmtweb-secrets.php` above docroot (see
+[docs/ONLINE_SEARCH.md](docs/ONLINE_SEARCH.md) for the file layout). All keys
+are optional — a provider with no key is silently skipped in the chain.
+
+**Operational state** is two files alongside the secrets:
+
+| File | Purpose | Format |
+|---|---|---|
+| `qmtweb-tier2-state.json` | Sticky-current provider pointer + last 10 roll-overs | JSON |
+| `qmtweb-stats.jsonl` | Per-request log (q_hash, tier1_groups, tier2_used, status, cache_hit, retry_after, latency_ms). No raw queries / no IPs. | JSON-lines |
+
+Both are gitignored and FTP-harvestable. The stats file grows; rotate manually
+when it exceeds ~10 MB.
+
 ## Tests
 
 ```sh

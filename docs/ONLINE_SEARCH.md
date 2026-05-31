@@ -73,13 +73,14 @@ can never name a closed or non-reporting field.
 **422** — empty query
 **404** — `{ "error": "Couldn't work out a location from \"X\". Try a city or 5-digit ZIP." }`
 
-## The Gemini key (Tier 2)
+## Provider keys (Tier 2)
 
-Tier 1 runs without any key. Tier 2 needs `GEMINI_API_KEY`. The key is read by
+Tier 1 runs without any key. Tier 2 needs at least one of `GEMINI_API_KEY`,
+`OPENROUTER_API_KEY`, `CEREBRAS_API_KEY`, `GROQ_API_KEY`. All are read by
 `server_secret()` in `site/api/_lib.php`, which checks in order:
 
-1. Process env (`getenv('GEMINI_API_KEY')`)
-2. `$_SERVER['GEMINI_API_KEY']` (e.g. `.htaccess SetEnv`)
+1. Process env (`getenv(...)`)
+2. `$_SERVER[...]` (e.g. `.htaccess SetEnv`)
 3. A PHP config file **one level above** `public_html` (recommended)
 
 ### Recommended setup on AccuWeb
@@ -89,13 +90,19 @@ In cPanel File Manager, **up one level from `public_html`** create
 
 ```php
 <?php
+// All Tier-2 keys are OPTIONAL — providers without a key are skipped in the
+// chain. Configure as many as you want; the orchestrator stays on whichever
+// one is working and rolls forward only on 429 / error.
 return [
-  'GEMINI_API_KEY'    => 'AQ.Ab…your-key…',
-  // Optional: override the Gemini model without redeploying. Leave unset to use
-  // the in-code default (gemini-2.5-flash). Useful when Google rotates which
-  // models are on the free tier — change one line in this file, no code push.
-  // 'GEMINI_MODEL'   => 'gemini-2.5-flash',
-  'AVIATIONSTACK_KEY' => 'optional-and-currently-unused',
+  'GEMINI_API_KEY'     => 'AQ.Ab…your-key…',
+  // 'GEMINI_MODEL'    => 'gemini-2.5-flash',
+  'OPENROUTER_API_KEY' => '…',
+  // 'OPENROUTER_MODEL' => 'meta-llama/llama-3.2-3b-instruct:free',
+  'CEREBRAS_API_KEY'   => '…',
+  // 'CEREBRAS_MODEL'  => 'llama3.1-8b',
+  'GROQ_API_KEY'       => '…',  // NOT Grok / X.ai — Groq is the Sunnyvale chip company
+  // 'GROQ_MODEL'      => 'llama-3.1-8b-instant',
+  'AVIATIONSTACK_KEY'  => 'optional-and-currently-unused',
 ];
 ```
 
