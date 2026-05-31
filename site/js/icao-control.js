@@ -278,6 +278,15 @@ export function initIcaoControl({
   let dataset = null;
   let datasetPromise = null;
 
+  // Pending requestAnimationFrame id for markTruncatedTiles. Declared up
+  // here (not next to the function) because markTruncatedTiles is a
+  // hoisted function declaration whose body is callable before its source
+  // line via the initial renderTiles() at the bottom of this function;
+  // a `let` declared near the function would still be in the temporal
+  // dead zone at that point and throw on read. See the comment on
+  // markTruncatedTiles for the coalescing rationale.
+  let markTruncateRafId = null;
+
   // Custom-name side-table (Online ↗ adds). Loaded once at init; mutated +
   // persisted whenever the user adds an ICAO from an Online search result.
   // describeIcao() consults this AFTER the static seed + bundled dataset, so
@@ -490,6 +499,7 @@ export function initIcaoControl({
     tiles.innerHTML = "";
     list.forEach((icao, i) => tiles.append(makeTile(icao, i)));
     updateCount();
+    markTruncatedTiles();
 
     if (sel) {
       const match = tiles.querySelector(sel);
@@ -571,6 +581,18 @@ export function initIcaoControl({
     if (Math.abs(delta) > 1) {
       window.scrollBy({ top: delta, left: 0, behavior: "auto" });
     }
+    // The layout switch reveals (or hides) the tile names — recompute
+    // overflow flags so the long-press / hover handlers fire only on
+    // genuinely-truncated tiles in the new state.
+    markTruncatedTiles();
+  }
+
+  // Re-mark tiles whenever the container's content box changes (viewport
+  // rotation, browser zoom, sibling layout shift, font load). Without
+  // this, an initial render measures correctly but a later resize leaves
+  // stale .has-overflow flags on tiles that newly fit or newly truncate.
+  if (typeof ResizeObserver === "function" && tiles) {
+    new ResizeObserver(() => markTruncatedTiles()).observe(tiles);
   }
 
   // --- Initial paint ---
@@ -679,15 +701,74 @@ export function initIcaoControl({
   }
 
   // After every render, walk the freshly-mounted buttons and flag those whose
-  // name span actually overflows (scrollWidth > clientWidth). Only flagged
-  // rows trigger the balloon — non-truncated names hover silently. Skip when
-  // the dropdown is hidden (display:none → zero dimensions → false positives).
+  // name span actually overflows. Only flagged rows trigger the balloon —
+  // non-truncated names hover silently. Skip when the dropdown is hidden
+  // (display:none → zero dimensions → false positives).
   function markTruncatedResults() {
     if (!searchResults || searchResults.hidden) return;
     for (const btn of searchResults.querySelectorAll(".icao-result")) {
       const name = btn.querySelector(".icao-result-name");
-      const overflows = !!name && name.scrollWidth > name.clientWidth + 1;
-      btn.classList.toggle("has-overflow", overflows);
+      btn.classList.toggle("has-overflow", isElementTruncated(name));
+    }
+  }
+
+  // Same overflow detection for tiles in expanded mode. Tiles must NOT be
+  // flagged on long-press for non-truncated names — that gesture is reserved
+  // for the iOS native drag-and-drop reorder. The balloon only fires when
+  // there's hidden text to reveal; otherwise the user keeps the drag affordance.
+  //
+  // Detection uses a Range over the text content's rendered width compared
+  // to the container's clientWidth — more reliable than scrollWidth on iOS
+  // Safari for flex children with `min-width: 0` (which under-reports the
+  // overflow and silently misses truncated rows like KHQM).
+  //
+  // Deferred to the next animation frame so layout has settled after
+  // renderTiles() / setOpen() — synchronous measurement returns stale
+  // dimensions on iOS during the flex reflow. `markTruncateRafId` (declared
+  // at the top of initIcaoControl with the other state vars to dodge the
+  // TDZ — markTruncatedTiles is hoisted with its body but a `let` here
+  // wouldn't be readable from the initial renderTiles() call) coalesces
+  // redundant calls inside a single frame: ResizeObserver fires multiple
+  // times during a window resize / orientation change, and without coalescing
+  // each callback queues its own rAF doing identical work.
+  function markTruncatedTiles() {
+    if (!tiles) return;
+    if (markTruncateRafId !== null) return; // already scheduled this frame
+    const apply = () => {
+      markTruncateRafId = null;
+      const open = isOpen();
+      for (const li of tiles.querySelectorAll(".tile")) {
+        const name = li.querySelector(".tile-name");
+        const overflows = open && isElementTruncated(name);
+        li.classList.toggle("has-overflow", overflows);
+      }
+    };
+    if (typeof requestAnimationFrame === "function") {
+      markTruncateRafId = requestAnimationFrame(apply);
+    } else {
+      apply();
+    }
+  }
+
+  // Range-based truncation detection. scrollWidth is unreliable on iOS Safari
+  // for flex children with overflow:hidden + text-overflow:ellipsis — it
+  // sometimes reports the clipped width instead of the natural content
+  // width. Measuring the text via Range.getBoundingClientRect() always
+  // returns the unclipped rendered width, which we compare to the visible
+  // container width. The +1 fudge absorbs subpixel rounding.
+  function isElementTruncated(el) {
+    if (!el || !el.firstChild) return false;
+    const containerWidth = el.getBoundingClientRect().width;
+    if (containerWidth === 0) return false; // hidden / not yet laid out
+    try {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      const textWidth = range.getBoundingClientRect().width;
+      range.detach?.(); // some browsers — older API, no-op elsewhere
+      return textWidth > containerWidth + 1;
+    } catch {
+      // Range API failure — fall back to the scrollWidth heuristic.
+      return el.scrollWidth > el.clientWidth + 1;
     }
   }
 
@@ -1187,16 +1268,20 @@ export function initIcaoControl({
     return !!(node && node.closest && node.closest(".tile-drag, .tile-controls"));
   }
 
-  // Helper: matches any tile with a tooltip while the panel is expanded.
-  // Truncation-based gating (the .has-overflow class set by markTruncatedTiles)
-  // proved unreliable on iOS Safari for flex children with `min-width: 0` —
-  // scrollWidth reads as already-clipped, missing real overflows on tiles like
-  // KHQM ("Bowerman — Hoquiam"). The user list is small (1-20 airports) and
-  // long-press for an info card is welcome regardless, so we fire on any
-  // expanded tile that carries a tooltip.
+  // Helper: matches a tile that's eligible for the balloon — truncated AND
+  // expanded AND the touch didn't start in the drag handle / row controls.
+  //
+  // Gating on .has-overflow is critical for the touch-drag interaction.
+  // iOS Safari initiates HTML5 drag on a long-press of a draggable=true
+  // element; if we fire the balloon on every long-press, we steal the
+  // drag gesture from the user. By only firing on truncated tiles, the
+  // user keeps the long-press → drag affordance on tiles whose names
+  // already fit (most), and gets the info-card balloon only on tiles
+  // where there's hidden text to read. Trade-off: can't drag-reorder a
+  // truncated tile by long-press; use ↑↓ arrows for those.
   function eligibleTile(target) {
     if (isTileReservedArea(target)) return null;
-    const tile = target.closest(".tile[data-tooltip]");
+    const tile = target.closest(".tile.has-overflow[data-tooltip]");
     return tile && isOpen() ? tile : null;
   }
 

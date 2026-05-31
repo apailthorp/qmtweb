@@ -941,24 +941,17 @@ footer p { margin: 0; }
   margin: 0;
 }
 
-/* Suppress iOS Safari's long-press defaults inside tiles. Our touch handler
- * uses long-press for the info-card balloon; the browser's competing
- * behaviour is:
- *   - text-selection magnifier (invert-video → word selected on release) →
- *     killed by `-webkit-user-select: none`
- *   - drag-preview on draggable elements (the persistent inverse-video that
- *     stays until release) → killed by `-webkit-user-drag: none` + suppressing
- *     the iOS callout
- * Applied to the tile AND all its descendants since iOS sometimes shows
- * these UIs on a child <button>/<span> even when the parent suppresses them.
- * The drag-and-drop reorder still works on desktop because it's mouse-based
- * (HTML5 drag events) — `user-drag: none` only blocks the iOS touch-preview. */
+/* Suppress iOS Safari's text-selection magnifier (the word-select on
+ * release) and the callout menu (Copy / Look Up) during long-press.
+ * Critically: NOT user-drag — iOS uses long-press on a draggable=true
+ * element to initiate drag-and-drop reorder, and -webkit-user-drag: none
+ * blocks that. We tolerate the iOS drag-preview UI during the hold
+ * because it IS the drag-start indicator the user is relying on. */
 .tile,
 .tile * {
   -webkit-user-select: none;
   user-select: none;
   -webkit-touch-callout: none;
-  -webkit-user-drag: none;
 }
 
 .tile-check {
