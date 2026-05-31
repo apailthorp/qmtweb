@@ -134,8 +134,13 @@ curl -s 'https://pailthorp.net/api/resolve.php?q=Springfield' | jq '.groups | le
 
 | Limit | Value | What hits it |
 |---|---|---|
-| Requests per minute | 20 | Each Online click that goes through to Gemini |
-| Requests per day | ~250 | Total daily across users |
+| Requests per minute | ~20 | Each Online click that goes through to Gemini |
+| Requests per day | ~20 | Per project/model on the free tier — verified against a live 429 in 2026-05 (`quotaId: GenerateRequestsPerDayPerProjectPerModel-FreeTier`, `quotaValue: 20`) |
+
+The daily quota is **per-project**, not per-user, so a single project token
+shared across visitors burns down the same 20/day. Google rotates which models
+and which numeric quotas live on the free tier — re-check by reading the
+`quotaValue` field in a real 429 response if you suspect drift.
 
 When quota is hit, Gemini returns HTTP 429 and `gemini_intent()` returns null;
 the client gets a single-group Tier-1 result with no error visible. Future work

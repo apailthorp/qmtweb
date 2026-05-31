@@ -324,7 +324,13 @@ function tier2_state_save(array $state): void {
     if (count($state['rollovers']) > TIER2_ROLLOVER_HISTORY_MAX) {
         $state['rollovers'] = array_slice($state['rollovers'], -TIER2_ROLLOVER_HISTORY_MAX);
     }
-    @file_put_contents(TIER2_STATE_FILE, json_encode($state, JSON_UNESCAPED_SLASHES));
+    // LOCK_EX serialises concurrent writers (two resolve.php requests racing
+    // to record a rollover) so we don't half-write the JSON and corrupt the
+    // file. Mirrors the qmtweb_stats_emit pattern; the write is a full-file
+    // overwrite (not append) so a partial write would leave malformed JSON
+    // that tier2_state_load() would fall back from — but better to prevent
+    // the situation than rely on the fallback every time.
+    @file_put_contents(TIER2_STATE_FILE, json_encode($state, JSON_UNESCAPED_SLASHES), LOCK_EX);
 }
 
 // Append a rollover event and update the current provider pointer. Called

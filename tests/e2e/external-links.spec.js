@@ -47,15 +47,30 @@ test.describe("footer data-source links are live", () => {
       expect(resp, `no response from ${link.url}`).not.toBeNull();
       expect(resp.status(), `unexpected HTTP ${resp.status()} from ${link.url}`).toBeLessThan(400);
 
-      // Positive signal: a known marker present in the title or body. Give
-      // SPA-rendered pages (aviationweather.gov) a moment to populate.
-      await page.waitForTimeout(2000);
+      // Positive signal: a known marker present in the title or body. Poll
+      // for it (up to 10s) instead of a fixed delay — SPA-rendered pages
+      // (aviationweather.gov, Cerebras) hydrate at variable speeds, so a
+      // content-based wait passes as soon as the marker appears and avoids
+      // a wasted 2s on pages that render synchronously.
+      const matched = await page.waitForFunction(
+        ({ src, flags }) => {
+          const re = new RegExp(src, flags);
+          const t = document.title || "";
+          const b = document.body ? document.body.innerText : "";
+          return re.test(`${t}\n${b}`);
+        },
+        { src: link.marker.source, flags: link.marker.flags },
+        { timeout: 10_000 },
+      ).then(() => true, () => false);
+
+      // Final assertion with the detailed error message — runs even if the
+      // poll timed out, so we get a useful "marker X not found on URL"
+      // failure rather than a generic Playwright timeout.
       const title = await page.title();
       const body = await page.locator("body").innerText().catch(() => "");
-      const haystack = `${title}\n${body}`;
       expect(
-        link.marker.test(haystack),
-        `marker ${link.marker} not found on ${link.url} (title: ${JSON.stringify(title)})`,
+        link.marker.test(`${title}\n${body}`),
+        `marker ${link.marker} not found on ${link.url} (title: ${JSON.stringify(title)}, polled: ${matched})`,
       ).toBe(true);
     });
   }
