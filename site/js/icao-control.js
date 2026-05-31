@@ -18,7 +18,7 @@
 //   * A hidden <input name="ids"> is kept in sync for the GET submit.
 
 import { DEFAULT_SEED, DEFAULT_SELECTED, seedAirport } from "./airports.js";
-import { LIST_MIN, LIST_MAX } from "./storage.js";
+import { LIST_MIN, LIST_MAX, createCustomNamesStore } from "./storage.js";
 import { isValidIcao } from "./metar.js";
 import { loadAirports, searchAirports } from "./search.js";
 
@@ -26,12 +26,231 @@ function uniq(codes) {
   return Array.from(new Set(codes));
 }
 
-function describeIcao(icao, lookupByIcao) {
+function describeIcao(icao, lookupByIcao, customNames) {
+  // Source priority:
+  //   1. Static seed (DEFAULT_SEED) — curated short names for the prepopulated
+  //      Pacific NW list, always present.
+  //   2. Loaded bundled dataset (airports.json) — ~12k entries with name+city.
+  //   3. Custom names captured from Online ↗ adds (e.g. KSMP = "Stampede Pass"
+  //      from aviationweather.gov), persisted in localStorage. Fallback for
+  //      AWC weather sites that aren't in the bundled airports dataset.
   const seed = seedAirport(icao);
   if (seed) return seed.name;
   const looked = lookupByIcao?.get(icao);
   if (looked) return `${looked.name}${looked.city ? ` — ${looked.city}` : ""}`;
+  const custom = customNames?.get(icao);
+  if (custom) return custom;
   return null;
+}
+
+// Subtle footer cue for Tier-2 health. The footer lists every configured
+// provider in the chain (Gemini · OpenRouter · Cerebras · Groq) as static
+// credits. When the chain rolls forward on a 429 / error, we italicize ONLY
+// the specific provider's name + append a small "busy 58s" chip that counts
+// down in real time. A successful subsequent call clears the styling. State
+// is intentionally NOT persisted across reloads.
+
+// Prune the static footer list to only credit providers this deploy can
+// actually call. Fires once on init from a page-level entry point; calls
+// the /api/health.php endpoint which reports which API keys are configured
+// in qmtweb-secrets.php. On failure (older deploys without health.php, or
+// http-server in dev/CI which can't run PHP) we silently bail and leave the
+// full static list in place — degraded but not broken.
+export async function initTier2Health() {
+  const list = document.getElementById("tier2-list");
+  if (!list) return;
+  try {
+    const res = await fetch("./api/health.php", { cache: "no-store" });
+    if (!res.ok) return;
+    const data = await res.json().catch(() => null);
+    const providers = Array.isArray(data?.tier2_providers) ? data.tier2_providers : [];
+    if (!providers.length) return; // no data → leave HTML as-is
+    const configured = new Set(
+      providers.filter((p) => p && p.configured && typeof p.name === "string").map((p) => p.name),
+    );
+    // Remove (not just hide) unconfigured links so the CSS adjacent-sibling
+    // separator selector reflects the actual visible order. display:none
+    // would leave the link in the DOM and the separator rule would still see
+    // it as adjacent, dropping " · " incorrectly.
+    list.querySelectorAll("a[data-provider]").forEach((a) => {
+      if (!configured.has(a.dataset.provider)) a.remove();
+    });
+  } catch {
+    // Network error / endpoint missing — leave the static HTML untouched.
+  }
+}
+
+// Module-level countdown bookkeeping. Stored here (not inside
+// markTier2Attribution) so a second invocation cleanly cancels the prior
+// timer instead of leaving a stale interval running against a removed chip.
+let tier2CountdownTimer = null;
+let tier2RetryAt = 0;
+// Scope of the current fallback ("per_day" / "per_minute" / "unknown" / null)
+// — drives the post-countdown chip text. We can't say "ready" after a
+// per-day window because Google's retryDelay is a per-request back-off hint,
+// not when the daily quota resets.
+let tier2CountdownScope = null;
+
+// Reorder the chain list so the sticky-current (last successful) provider is
+// listed first — emphasises which service is actually doing the work right
+// now. CSS separators (` · `) regenerate automatically since they're driven
+// by adjacent-sibling selectors. When `provider` is null/unknown, the list
+// keeps its previous order (no-op).
+function reorderTier2List(provider) {
+  const list = document.getElementById("tier2-list");
+  if (!list || !provider) return;
+  const sticky = list.querySelector(`a[data-provider="${provider}"]`);
+  // Already first → no DOM churn. firstElementChild because there may be
+  // whitespace text nodes between, but inside #tier2-list we wrote the HTML
+  // with no inter-element whitespace specifically so JS can move freely.
+  if (!sticky || list.firstElementChild === sticky) return;
+  list.prepend(sticky);
+}
+
+function markTier2Attribution(state, detail, provider) {
+  const el = document.getElementById("tier2-attribution");
+  if (!el) return;
+
+  // Reorder first so the sticky provider is at the front. Runs on every
+  // response (live or fallback) so the order tracks the server's view.
+  reorderTier2List(provider);
+
+  // Clear all prior per-provider state — idempotent. A second "ok" call after
+  // a recovered chain clears successfully even if no prior fallback existed.
+  el.querySelectorAll("a[data-provider]").forEach((a) => {
+    a.classList.remove("is-fallback");
+    a.removeAttribute("title");
+  });
+  if (tier2CountdownTimer) {
+    clearInterval(tier2CountdownTimer);
+    tier2CountdownTimer = null;
+  }
+  el.querySelector(".tier2-busy")?.remove();
+
+  if (state !== "fallback" || !provider) return;
+
+  // Find the specific provider link to decorate. If it's not in the static
+  // HTML list (e.g. a provider added to the chain but not yet credited in
+  // markup), silently skip — we don't want to invent UI for unknown brands.
+  const link = el.querySelector(`a[data-provider="${provider}"]`);
+  if (!link) return;
+  link.classList.add("is-fallback");
+
+  // Hover summary (title attribute on the throttled link). Composed from
+  // whatever detail the server gave us. Generic across providers — only
+  // Gemini supplies the rich google.rpc structure today; OpenAI-compat
+  // providers fill `message` and leave the rest null.
+  const brand = link.textContent || provider;
+  let summary = `${brand} is unavailable — chain rolled forward.`;
+  const scope = detail?.scope ?? null;
+  if (detail) {
+    const scopeWord = scope === "per_day"
+      ? "daily"
+      : scope === "per_minute"
+        ? "per-minute"
+        : null;
+    const retrySecs = Number.isFinite(detail.retry_after_seconds)
+      ? detail.retry_after_seconds
+      : null;
+    const limit = Number.isFinite(detail.limit) ? detail.limit : null;
+
+    const scopeText = scopeWord ? `${scopeWord} quota` : "rate-limit";
+    const limitText = limit ? ` of ${limit}` : "";
+    const retryText = retrySecs !== null ? ` Retry in ~${humanRetry(retrySecs)}.` : "";
+    summary = `${brand} ${scopeText}${limitText} hit — chain rolled forward.${retryText}`;
+
+    // Caveat for the daily case: Google's retryDelay is a per-request
+    // back-off hint, NOT the time until the daily quota resets — which is
+    // typically midnight Pacific. Without this note, "Retry in ~7s" looks
+    // like a quota-reset timer; the user waits 7s, retries, and gets 429
+    // again until the actual daily reset.
+    if (scope === "per_day" && retrySecs !== null) {
+      summary += "\n\nNote: this is the provider's suggested back-off between "
+        + "requests, not when the daily quota resets. Free-tier daily quotas "
+        + "typically reset at midnight Pacific.";
+    }
+
+    // Append the unmodified upstream error.message so the user can verify
+    // our interpretation against the source. \n is honoured by native title
+    // tooltips in every browser we care about.
+    if (typeof detail.message === "string" && detail.message.trim()) {
+      summary += `\n\n— Full ${brand} error —\n` + detail.message.trim();
+    }
+  }
+  link.title = summary;
+
+  // Insert the chip immediately after the throttled link so the visual
+  // pairing reads "Gemini *busy 30s* · OpenRouter · Cerebras …" — chip
+  // sits next to the provider it describes, not orphaned at the end.
+  const chip = document.createElement("span");
+  chip.className = "tier2-busy";
+  link.after(chip);
+
+  // If we know the retry window, anchor a wall-clock deadline and tick.
+  // Computing remaining from `Date.now()` (rather than decrementing a
+  // counter) means a backgrounded tab snaps back to the correct value when
+  // it regains focus — `setInterval` is throttled in background tabs but
+  // we don't accumulate drift.
+  const retrySecs = detail && Number.isFinite(detail.retry_after_seconds)
+    ? Math.max(0, detail.retry_after_seconds)
+    : null;
+  if (retrySecs === null) {
+    // No retry info from the provider — show a static chip, no countdown.
+    chip.textContent = " busy";
+    return;
+  }
+  tier2CountdownScope = scope;
+  tier2RetryAt = Date.now() + retrySecs * 1000;
+  tickTier2Countdown();
+  tier2CountdownTimer = setInterval(tickTier2Countdown, 1000);
+}
+
+// One tick of the busy/ready countdown. Reads the current fallback state
+// from the DOM so an external clear (markTier2Attribution("ok", ...) or a
+// page-level reset) silently stops the interval on the next tick instead of
+// fighting with the chip.
+function tickTier2Countdown() {
+  const el = document.getElementById("tier2-attribution");
+  // Fallback state lives on a specific <a data-provider="..."> link now (not
+  // on the wrapper span). If no link is flagged, an external clear happened
+  // → stop the timer cleanly. Same for a removed chip.
+  const flagged = el?.querySelector("a[data-provider].is-fallback");
+  const chip = el?.querySelector(".tier2-busy");
+  if (!flagged || !chip) {
+    if (tier2CountdownTimer) {
+      clearInterval(tier2CountdownTimer);
+      tier2CountdownTimer = null;
+    }
+    return;
+  }
+  const remainingMs = tier2RetryAt - Date.now();
+  if (remainingMs <= 0) {
+    // Predicted window has passed. For per-minute quotas that means a slot
+    // is genuinely free → "ready". For per-day, Google's retryDelay was a
+    // per-request back-off hint, not a quota-reset countdown — so we don't
+    // tell the user "ready" when they're still over the daily limit; show
+    // "daily limit" to indicate they'll likely keep getting 429 until the
+    // actual reset (midnight Pacific). 'unknown' scope is treated like
+    // per-minute (best-effort) because we have no better signal.
+    chip.textContent = tier2CountdownScope === "per_day" ? " daily limit" : " ready";
+    clearInterval(tier2CountdownTimer);
+    tier2CountdownTimer = null;
+  } else {
+    chip.textContent = ` busy ${humanRetry(Math.ceil(remainingMs / 1000))}`;
+  }
+}
+
+// Format seconds into a short human string used by both the visible chip and
+// the hover summary. Tier-2 retry windows are usually <60s (per-minute
+// quota) or up to several hours (per-day, but Google often returns the
+// short-window suggestion). Keep it compact: "7s" / "3m" / "1h 23m".
+function humanRetry(seconds) {
+  const s = Math.max(0, Math.round(seconds));
+  if (s < 60)   return `${s}s`;
+  if (s < 3600) return `${Math.round(s / 60)}m`;
+  const h = Math.floor(s / 3600);
+  const m = Math.round((s % 3600) / 60);
+  return m ? `${h}h ${m}m` : `${h}h`;
 }
 
 export function initIcaoControl({
@@ -58,6 +277,22 @@ export function initIcaoControl({
   const lookupByIcao = new Map();
   let dataset = null;
   let datasetPromise = null;
+
+  // Custom-name side-table (Online ↗ adds). Loaded once at init; mutated +
+  // persisted whenever the user adds an ICAO from an Online search result.
+  // describeIcao() consults this AFTER the static seed + bundled dataset, so
+  // it only fills gaps for stations that aren't in either built-in source
+  // (typical case: AWC weather sites like KSMP).
+  const customNamesStore = createCustomNamesStore();
+  const customNames = new Map(Object.entries(customNamesStore.load()));
+  function rememberCustomName(icao, name) {
+    if (!icao || !name) return;
+    if (customNames.get(icao) === name) return; // no-op
+    customNames.set(icao, name);
+    const out = {};
+    customNames.forEach((v, k) => { out[k] = v; });
+    customNamesStore.save(out);
+  }
 
   // Cache the in-flight load so concurrent callers (e.g. fast keystrokes) all
   // await the SAME promise and receive the real dataset. Returning early while a
@@ -184,7 +419,12 @@ export function initIcaoControl({
 
     // Name lives OUTSIDE the pill so the pill stays a code-only chip (matching
     // the collapsed look); the name shows beside it when expanded.
-    const name = describeIcao(icao, lookupByIcao);
+    const name = describeIcao(icao, lookupByIcao, customNames);
+    // Tooltip text for the long-press / hover balloon. Only shown when the
+    // tile actually overflows (markTruncatedTiles() flags `.has-overflow`).
+    // Tiles without a name get the bare ICAO — the chip can't overflow on
+    // its own, so `has-overflow` won't fire and the tooltip stays hidden.
+    li.dataset.tooltip = name ? `${icao} — ${name}` : icao;
     let nameEl = null;
     if (name) {
       nameEl = document.createElement("span");
@@ -362,16 +602,100 @@ export function initIcaoControl({
   //   "notfound" → "no result" glyph (empty stations / 404 from proxy)
   //   "error"    → warning glyph (network failure / dataset unavailable)
   //   ""         → neutral text only; clears any prior indicator
-  function setStatus(text, state = "") {
+  //
+  // `trailIcon: "magnify"` appends an inline magnifier SVG after the message —
+  // used by the "no local match — try Online" hint so the affordance physically
+  // points at the magnifier button. Built as a DOM node (not innerHTML) so the
+  // text portion stays escape-safe.
+  function setStatus(text, state = "", trailIcon = "") {
     if (!searchStatusEl) return;
     searchStatusEl.textContent = text ?? "";
+    if (trailIcon === "magnify") {
+      const svgNS = "http://www.w3.org/2000/svg";
+      const svg = document.createElementNS(svgNS, "svg");
+      svg.setAttribute("class", "status-trail-icon");
+      svg.setAttribute("viewBox", "0 0 16 16");
+      svg.setAttribute("width", "12");
+      svg.setAttribute("height", "12");
+      svg.setAttribute("aria-hidden", "true");
+      svg.setAttribute("focusable", "false");
+      const g = document.createElementNS(svgNS, "g");
+      g.setAttribute("stroke", "currentColor");
+      g.setAttribute("stroke-width", "1.6");
+      g.setAttribute("fill", "none");
+      g.setAttribute("stroke-linecap", "round");
+      const circle = document.createElementNS(svgNS, "circle");
+      circle.setAttribute("cx", "7"); circle.setAttribute("cy", "7"); circle.setAttribute("r", "4.5");
+      const line = document.createElementNS(svgNS, "line");
+      line.setAttribute("x1", "10.2"); line.setAttribute("y1", "10.2");
+      line.setAttribute("x2", "14");   line.setAttribute("y2", "14");
+      g.append(circle, line);
+      svg.append(g);
+      searchStatusEl.append(svg);
+    }
     searchStatusEl.classList.toggle("is-loading",  state === "loading");
     searchStatusEl.classList.toggle("is-notfound", state === "notfound");
     searchStatusEl.classList.toggle("is-error",    state === "error");
   }
 
+  // --- Result-row truncation tooltip ---
+  //
+  // The result rows use `text-overflow: ellipsis` to clip long airport names.
+  // Native `title` tooltips are slow (~700ms hover delay) and unstyled, and
+  // they're flaky on disabled buttons; instead we render a styled balloon
+  // appended to <body> so it escapes the dropdown's `overflow-y: auto` clip
+  // (which would otherwise truncate any in-flow tooltip). The balloon shows
+  // only when the name column is actually overflowing — non-truncated rows
+  // hover silently.
+  let resultTooltip = document.getElementById("icao-result-tooltip");
+  if (!resultTooltip) {
+    resultTooltip = document.createElement("div");
+    resultTooltip.id = "icao-result-tooltip";
+    resultTooltip.className = "result-tooltip";
+    resultTooltip.setAttribute("role", "tooltip");
+    document.body.append(resultTooltip);
+  }
+
+  function showResultTooltip(btn) {
+    const text = btn.dataset.tooltip;
+    if (!text) return;
+    resultTooltip.textContent = text;
+    resultTooltip.classList.add("is-visible");
+    // Measure AFTER the tip becomes visible so we get its real height.
+    const target = btn.getBoundingClientRect();
+    const tip = resultTooltip.getBoundingClientRect();
+    // Prefer placing above the row; fall back below when the top edge would
+    // clip against the viewport. Horizontal: clamp inside the viewport with
+    // a 4px safety margin so a long name doesn't run off the edge.
+    const above = target.top - tip.height - 6;
+    const below = target.bottom + 6;
+    const top = above >= 4 ? above : below;
+    const left = Math.max(4, Math.min(window.innerWidth - tip.width - 4, target.left));
+    resultTooltip.style.top  = `${top}px`;
+    resultTooltip.style.left = `${left}px`;
+  }
+  function hideResultTooltip() {
+    resultTooltip.classList.remove("is-visible");
+  }
+
+  // After every render, walk the freshly-mounted buttons and flag those whose
+  // name span actually overflows (scrollWidth > clientWidth). Only flagged
+  // rows trigger the balloon — non-truncated names hover silently. Skip when
+  // the dropdown is hidden (display:none → zero dimensions → false positives).
+  function markTruncatedResults() {
+    if (!searchResults || searchResults.hidden) return;
+    for (const btn of searchResults.querySelectorAll(".icao-result")) {
+      const name = btn.querySelector(".icao-result-name");
+      const overflows = !!name && name.scrollWidth > name.clientWidth + 1;
+      btn.classList.toggle("has-overflow", overflows);
+    }
+  }
+
+
   function renderResults(results) {
     if (!searchResults) return;
+    // Any rerender invalidates whatever row the balloon was pointing at.
+    hideResultTooltip();
     searchResults.innerHTML = "";
     if (results.length === 0) {
       searchResults.hidden = true;
@@ -404,8 +728,16 @@ export function initIcaoControl({
       }
       const nameSpan = document.createElement("span");
       nameSpan.className = "icao-result-name";
-      nameSpan.textContent =
+      const fullName =
         `${a.name}${a.city ? `, ${a.city}` : ""}${a.country ? ` (${a.country})` : ""}`;
+      nameSpan.textContent = fullName;
+      // Tooltip content — surfaced by the custom balloon when the name column
+      // is truncated, and announced via aria-label for screen readers. No
+      // `title` attribute so the native (slow, unstyled) tooltip doesn't fight
+      // the balloon. Markup-only: detection + show/hide live below.
+      const tipLabel = `${a.icao}${a.iata ? ` (${a.iata})` : ""} — ${fullName}`;
+      btn.dataset.tooltip = tipLabel;
+      btn.setAttribute("aria-label", tipLabel);
       const hintSpan = document.createElement("span");
       hintSpan.className = "icao-result-hint";
       hintSpan.textContent = isSelected ? "active" : isListed ? "reactivate" : full ? "list full" : "add";
@@ -414,6 +746,7 @@ export function initIcaoControl({
       item.append(btn);
       searchResults.append(item);
     }
+    markTruncatedResults();
   }
 
   // Render online (nearest-METAR) results into the same dropdown. Station shape:
@@ -424,6 +757,8 @@ export function initIcaoControl({
   // location, so the user can pick from the right interpretation.
   function renderOnlineGroups(groups) {
     if (!searchResults) return;
+    // Any rerender invalidates whatever row the balloon was pointing at.
+    hideResultTooltip();
     searchResults.innerHTML = "";
     const nonEmpty = (groups || []).filter((g) => Array.isArray(g.stations) && g.stations.length);
     if (!nonEmpty.length) {
@@ -448,6 +783,11 @@ export function initIcaoControl({
         btn.type = "button";
         btn.className = "icao-result";
         btn.dataset.addIcao = s.icao;
+        // Stash the AWC-provided station name on the button so the click
+        // handler can persist it. Stations that aren't in our bundled
+        // airports.json (typical AWC weather sites like KSMP = Stampede Pass)
+        // would otherwise show only the bare ICAO on their tile after add.
+        if (s.name) btn.dataset.addName = String(s.name);
         const isListed = list.includes(s.icao);
         const isSelected = selected.includes(s.icao);
         btn.disabled = isSelected || (full && !isListed);
@@ -461,7 +801,14 @@ export function initIcaoControl({
         const nameSpan = document.createElement("span");
         nameSpan.className = "icao-result-name";
         const dist = typeof s.distance_km === "number" ? ` · ${s.distance_km} km` : "";
-        nameSpan.textContent = `${s.name || s.icao}${dist}`;
+        const fullName = `${s.name || s.icao}${dist}`;
+        nameSpan.textContent = fullName;
+        // Tooltip content surfaced by the custom balloon (see markTruncated()
+        // below); aria-label for screen readers. No native `title` so we don't
+        // get a competing OS tooltip after the half-second hover delay.
+        const tipLabel = `${s.icao} — ${fullName}`;
+        btn.dataset.tooltip = tipLabel;
+        btn.setAttribute("aria-label", tipLabel);
 
         const hintSpan = document.createElement("span");
         hintSpan.className = "icao-result-hint icao-result-online";
@@ -474,6 +821,7 @@ export function initIcaoControl({
         searchResults.append(item);
       }
     }
+    markTruncatedResults();
   }
 
   async function runSearch(q) {
@@ -494,7 +842,11 @@ export function initIcaoControl({
     const results = searchAirports(q.trim(), data, { limit: 8 });
     if (seq !== searchSeq) return;
     renderResults(results);
-    if (results.length === 0) setStatus(`No local match for "${q.trim()}" — try Online.`);
+    if (results.length === 0) {
+      // Append the magnifier glyph so the hint visually points at the Online
+      // button the user should click next. Same icon shape as the button itself.
+      setStatus(`No local match for "${q.trim()}" — try Online `, "", "magnify");
+    }
   }
 
   query.addEventListener("input", () => {
@@ -532,7 +884,16 @@ export function initIcaoControl({
     renderOnlineGroups([]);
     setStatus("");
     updateClearButton();
-    query.focus();
+    // If the search auto-expanded a collapsed panel, return to that prior
+    // state now that the user has explicitly dismissed the search. Pairs
+    // with the manageToggle path: × clears + restores, Edit collapses + clears.
+    if (expandedForOnline) {
+      expandedForOnline = false;
+      setOpen(false);
+      manageToggle?.focus({ preventScroll: true });
+    } else {
+      query.focus();
+    }
   });
 
   // Initial paint of the clear button (hidden when the input starts empty).
@@ -568,6 +929,27 @@ export function initIcaoControl({
       const res = await fetch(`./api/resolve.php?q=${encodeURIComponent(q)}`, { signal: onlineAbort.signal });
       if (seq !== onlineSeq) return;
       const data = await res.json().catch(() => null);
+      // Subtle footer cue: italicize the specific provider that fell back on
+      // this call + show a small "busy ~7s" chip next to its name. The other
+      // providers in the chain list render normally. Reset to neutral on a
+      // successful response. Quota detail (scope, limit, retry window) comes
+      // from server-side parsing of provider 429 bodies (Gemini's
+      // google.rpc.RetryInfo is the richest; OpenAI-compat providers give us
+      // just the error message).
+      //
+      // Fires on both success (data) and structured errors (data with `error`),
+      // since the server includes tier2 metadata on 404s too so the user can
+      // see which provider was throttled when the failure was provider-driven.
+      const tier2 = data?.tier2;
+      const provider = data?.tier2_provider;
+      // Always pass the credited provider so the list can reorder to put
+      // whichever service served first — even on "live" responses where
+      // there's no fallback decoration to apply.
+      if (tier2 === "live" || tier2 === "off") {
+        markTier2Attribution("ok", null, provider);
+      } else if (tier2 === "fallback") {
+        markTier2Attribution("fallback", data?.tier2_detail, provider);
+      }
       if (!res.ok || !data) {
         renderOnlineGroups([]);
         // A structured error from the proxy ("couldn't work out a location…")
@@ -636,7 +1018,7 @@ export function initIcaoControl({
     const datasetReady = dataset !== null;
     const looksReal =
       isValidIcao(up) &&
-      (!datasetReady || describeIcao(up, lookupByIcao) !== null);
+      (!datasetReady || describeIcao(up, lookupByIcao, customNames) !== null);
     if (looksReal) {
       e.preventDefault();
       query.value = trimmed.slice(0, trimmed.length - lastWord.length).replace(/[ ,]+$/, "");
@@ -651,32 +1033,125 @@ export function initIcaoControl({
     }
   });
 
+  // Balloon tooltip wiring — two distinct triggers, never on focus:
+  //
+  //   Desktop: hover the row → show; mouse leaves → hide. Movement onto a
+  //   child element of the same button keeps it visible (relatedTarget guard).
+  //
+  //   Touch:   long-press (~450 ms still on the row) → show + suppress the
+  //   synthetic click so the airport isn't added by the long-press. Release,
+  //   move, or cancel → hide.
+  //
+  // We deliberately do NOT listen on `focusin`: iOS fires focusin during a
+  // tap-down, which used to make the balloon appear AFTER selection and
+  // stick. Screen-reader accessibility is preserved via the button's
+  // `aria-label` (set in render*), which announces the full label whether
+  // or not the visual balloon is shown.
+
+  searchResults?.addEventListener("mouseover", (e) => {
+    const btn = e.target.closest(".icao-result.has-overflow");
+    if (btn) showResultTooltip(btn);
+  });
+  searchResults?.addEventListener("mouseout", (e) => {
+    const btn = e.target.closest(".icao-result.has-overflow");
+    if (btn && !btn.contains(e.relatedTarget)) hideResultTooltip();
+  });
+
+  // Long-press for touch. State is scoped to the dropdown listeners so
+  // multiple rapid touches don't interleave timers across rows.
+  let touchPressTimer = null;
+  let touchTooltipShown = false;
+  function cancelLongPress() {
+    if (touchPressTimer) {
+      clearTimeout(touchPressTimer);
+      touchPressTimer = null;
+    }
+  }
+  searchResults?.addEventListener("touchstart", (e) => {
+    const btn = e.target.closest(".icao-result.has-overflow");
+    if (!btn) return;
+    cancelLongPress();
+    touchTooltipShown = false;
+    // 450 ms is the iOS default long-press threshold; mirrors the Safari
+    // "tap-and-hold" feel users already know from selecting links / images.
+    touchPressTimer = setTimeout(() => {
+      showResultTooltip(btn);
+      touchTooltipShown = true;
+      touchPressTimer = null;
+    }, 450);
+  }, { passive: true });
+  searchResults?.addEventListener("touchmove", () => {
+    // Any drag-like movement cancels the long-press AND dismisses an already-
+    // shown balloon — matches how the iOS text-selection magnifier behaves.
+    cancelLongPress();
+    if (touchTooltipShown) { hideResultTooltip(); touchTooltipShown = false; }
+  }, { passive: true });
+  searchResults?.addEventListener("touchcancel", () => {
+    cancelLongPress();
+    if (touchTooltipShown) { hideResultTooltip(); touchTooltipShown = false; }
+  });
+  searchResults?.addEventListener("touchend", (e) => {
+    cancelLongPress();
+    if (touchTooltipShown) {
+      // Long-press completed: release dismisses the balloon, and we also
+      // suppress the synthetic click so the airport isn't added unintentionally.
+      // Short taps fall through here without preventDefault, so normal
+      // selection still works.
+      hideResultTooltip();
+      touchTooltipShown = false;
+      e.preventDefault();
+    }
+  });
+
+  // The balloon is `position: fixed` — once the user scrolls (page or the
+  // dropdown's own overflow:auto box) the anchored position is stale, so
+  // hide. Re-hover repositions if still pointing at the row.
+  searchResults?.addEventListener("scroll", hideResultTooltip, { passive: true });
+  window.addEventListener("scroll", hideResultTooltip, { passive: true });
+
   searchResults?.addEventListener("click", (e) => {
     const btn = e.target.closest("button[data-add-icao]");
     if (!btn || btn.disabled) return;
     e.preventDefault();
+    // Defensive — any selection always clears the balloon. Belt-and-suspenders
+    // against an in-flight long-press timer that's about to fire, or a stale
+    // visible state we missed via touchend on flaky touch hardware.
+    cancelLongPress();
+    hideResultTooltip();
+    // Online result rows carry a `data-add-name` with the AWC-supplied
+    // station name. Persist it so the tile can render the friendly name
+    // (e.g. "Stampede Pass, WA, US" for KSMP) even though KSMP isn't in
+    // our bundled airports dataset. Tile renders pull from describeIcao,
+    // which now consults the customNames map.
+    if (btn.dataset.addName) {
+      rememberCustomName(btn.dataset.addIcao, btn.dataset.addName);
+    }
     if (addAndSelect(btn.dataset.addIcao)) {
-      query.value = "";
-      renderResults([]);
-      setStatus("");
-      updateClearButton();
-      // If runOnlineSearch auto-expanded us from collapsed, snap back now
-      // that the user has made a selection — they didn't ask for edit mode.
-      // Move focus to the Edit toggle so keyboard users keep an explicit
-      // focus target (otherwise focus falls back to <body> on collapse).
-      if (expandedForOnline) {
-        expandedForOnline = false;
-        setOpen(false);
-        manageToggle?.focus({ preventScroll: true });
-      } else {
-        query.focus();
-      }
+      // Keep the query + dropdown visible after a selection so the user can
+      // add more results from the same search. Update the clicked row in
+      // place (active + disabled) so duplicates aren't possible. Two explicit
+      // dismissals end the search session:
+      //   1. × clear button → empties the query and snaps back to the prior
+      //      expanded/collapsed state (preserving auto-expand semantics)
+      //   2. Edit toggle to collapse → also clears the search (see the
+      //      manageToggle handler below)
+      const hint = btn.querySelector(".icao-result-hint");
+      if (hint) hint.textContent = "active";
+      btn.disabled = true;
+      query.focus();
     }
   });
 
   // --- Tile interactions: check toggle / remove / reorder ---
 
   tiles.addEventListener("click", (e) => {
+    // Defensive cleanup — any tile click definitively ends any in-flight
+    // long-press. touchend's preventDefault already suppresses the click
+    // after a successful long-press; this catches the rare case where the
+    // tooltip is still visible but the timer hasn't fired yet (fast tap
+    // through the long-press threshold).
+    cancelLongPress();
+    hideResultTooltip();
     const toggle = e.target.closest("button[data-toggle-icao]");
     if (toggle) {
       e.preventDefault();
@@ -696,6 +1171,68 @@ export function initIcaoControl({
       const icao = move.dataset.moveIcao;
       const delta = move.dataset.direction === "up" ? -1 : 1;
       if (moveTo(icao, list.indexOf(icao) + delta)) commit();
+    }
+  });
+
+  // --- Tile truncation tooltip ---
+  //
+  // Same balloon used by search results, reused for tiles in expanded mode
+  // when the name overflows. Scoped to the tile body — touches that start
+  // on the drag handle (`⋮⋮`) or the row controls (↑↓−) are left alone so
+  // drag-and-drop and the buttons keep working without competing with the
+  // long-press timer. Reuses the module-level touchPressTimer / touchTooltipShown
+  // and the cancelLongPress() helper defined for the search-results path
+  // — only one finger can press at a time, so shared state is safe.
+  function isTileReservedArea(node) {
+    return !!(node && node.closest && node.closest(".tile-drag, .tile-controls"));
+  }
+
+  // Helper: matches any tile with a tooltip while the panel is expanded.
+  // Truncation-based gating (the .has-overflow class set by markTruncatedTiles)
+  // proved unreliable on iOS Safari for flex children with `min-width: 0` —
+  // scrollWidth reads as already-clipped, missing real overflows on tiles like
+  // KHQM ("Bowerman — Hoquiam"). The user list is small (1-20 airports) and
+  // long-press for an info card is welcome regardless, so we fire on any
+  // expanded tile that carries a tooltip.
+  function eligibleTile(target) {
+    if (isTileReservedArea(target)) return null;
+    const tile = target.closest(".tile[data-tooltip]");
+    return tile && isOpen() ? tile : null;
+  }
+
+  tiles?.addEventListener("mouseover", (e) => {
+    const target = eligibleTile(e.target);
+    if (target) showResultTooltip(target);
+  });
+  tiles?.addEventListener("mouseout", (e) => {
+    const target = e.target.closest(".tile[data-tooltip]");
+    if (target && !target.contains(e.relatedTarget)) hideResultTooltip();
+  });
+  tiles?.addEventListener("touchstart", (e) => {
+    const target = eligibleTile(e.target);
+    if (!target) return;
+    cancelLongPress();
+    touchTooltipShown = false;
+    touchPressTimer = setTimeout(() => {
+      showResultTooltip(target);
+      touchTooltipShown = true;
+      touchPressTimer = null;
+    }, 450);
+  }, { passive: true });
+  tiles?.addEventListener("touchmove", () => {
+    cancelLongPress();
+    if (touchTooltipShown) { hideResultTooltip(); touchTooltipShown = false; }
+  }, { passive: true });
+  tiles?.addEventListener("touchcancel", () => {
+    cancelLongPress();
+    if (touchTooltipShown) { hideResultTooltip(); touchTooltipShown = false; }
+  });
+  tiles?.addEventListener("touchend", (e) => {
+    cancelLongPress();
+    if (touchTooltipShown) {
+      hideResultTooltip();
+      touchTooltipShown = false;
+      e.preventDefault(); // suppress synthetic click after a successful long-press
     }
   });
 
@@ -774,7 +1311,28 @@ export function initIcaoControl({
     // Manual toggle: user wants explicit control of the panel state, so drop
     // the auto-collapse intent that runOnlineSearch may have set.
     expandedForOnline = false;
-    setOpen(!isOpen());
+    const wasOpen = isOpen();
+    setOpen(!wasOpen);
+    // Manual collapse dismisses any active search session too — pairs with
+    // the × button as the two ways to end the "results stay visible after
+    // selection" mode. When opening (was closed → now open) we leave the
+    // query alone; the user might be returning to a typed phrase mid-edit.
+    if (wasOpen) {
+      // Cancel any in-flight Online call so a late response doesn't repaint
+      // a freshly-dismissed dropdown.
+      if (onlineAbort) {
+        onlineAbort.abort();
+        onlineAbort = null;
+        onlineSeq++;
+        onlineBtn?.classList.remove("is-loading");
+        onlineBtn?.removeAttribute("aria-busy");
+      }
+      query.value = "";
+      renderResults([]);
+      renderOnlineGroups([]);
+      setStatus("");
+      updateClearButton();
+    }
   });
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && isOpen()) {

@@ -483,6 +483,16 @@ button {
   gap: 0.4em;
 }
 
+/* Trailing icon appended to status messages (e.g. "try Online" hint). Picks up
+ * the surrounding text colour so it follows the .is-notfound / .is-error
+ * states automatically. */
+.status-trail-icon {
+  flex: 0 0 auto;
+  margin-left: -0.15em;
+  vertical-align: middle;
+  color: var(--accent);
+}
+
 /* When the status has no message, collapse it so the tile-box doesn't
    reserve a phantom row below the query line. The status only takes up
    space when it actually has something to say (loading / not-found /
@@ -557,6 +567,17 @@ button {
   border-bottom: 1px solid #f0f0f0;
   color: var(--fg);
 }
+/* Same iOS long-press suppression as .tile (see the tile rules). Our touch
+ * handler uses long-press for the truncation balloon; without these the
+ * browser shows its text-selection magnifier + leaves a word selected on
+ * release. Applied to the button AND descendants because iOS sometimes shows
+ * the magnifier on the inner <span> even when the button is non-selectable. */
+.icao-result,
+.icao-result * {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
 
 .icao-search-results li:last-child .icao-result {
   border-bottom: none;
@@ -600,6 +621,37 @@ button {
 /* Online (nearest-METAR) result rows get an accent badge to distinguish them
  * from the bundled-local matches. */
 .icao-result-hint.icao-result-online { color: var(--accent); }
+
+/* Truncation balloon for result rows.
+ *
+ * Lives at document.body (singleton), positioned via JS each show. `position:
+ * fixed` so it escapes the dropdown's `overflow-y: auto` clip — an inside-the-
+ * scrollbox tooltip would get cropped. Only shown when JS flags a row as
+ * `.has-overflow` (its name span actually overflows); non-truncated rows
+ * hover silently. */
+.result-tooltip {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 100;
+  max-width: min(28rem, 90vw);
+  padding: 0.35rem 0.6rem;
+  background: rgba(28, 32, 40, 0.95);
+  color: #fff;
+  font-size: 0.82rem;
+  line-height: 1.35;
+  border-radius: var(--radius);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(2px);
+  transition: opacity 0.12s ease, transform 0.12s ease;
+  white-space: normal;
+}
+.result-tooltip.is-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
 
 /* Section divider in the Online results list when an ambiguous query (e.g.
    "Springfield", "King County") resolves to multiple locations — one header
@@ -657,7 +709,57 @@ footer {
   padding-top: 0.75rem;
   border-top: 1px solid var(--border);
   color: var(--fg-muted);
-  font-size: 0.85rem;
+  /* Smaller than body text — credits are reference info, not primary content.
+   * Provider list (Gemini · OpenRouter · Cerebras · Groq) takes a fair bit
+   * of horizontal space; smaller helps it wrap less aggressively on mobile. */
+  font-size: 0.75rem;
+}
+footer p { margin: 0; }
+
+/* Keep a credit + its parenthetical aside on the same line — wraps as one
+ * unit to the next row instead of breaking between the link and the "(...)"
+ * clarification (e.g. "Google Gemini (Online ↗ natural-language)."). */
+.nowrap-chunk {
+  white-space: nowrap;
+}
+
+/* Subtle "Tier-2 fell back" cue on the Gemini credit. Italicises the whole
+ * chunk and adds a dotted underline to the link — quiet enough that someone
+ * not looking won't notice, but immediately recognisable to anyone curious
+ * about why Online ↗ stopped returning multi-group results. Set by JS on a
+ * fallback response from resolve.php; cleared on the next successful Tier-2
+ * call. Hover the link for a plain-English explanation (set via title). */
+/* Separator between adjacent provider links in the chain credit list. CSS-
+ * driven (not text nodes) so JS-reordering the children doesn't have to
+ * shuffle separator nodes around — they just regenerate. The `+ a` selector
+ * also handles the chip case: a busy chip lands BETWEEN two links, so the
+ * second link wouldn't be adjacent to the first; we add a separate rule for
+ * the `a + .tier2-busy + a` chain so the chip-following link still gets one. */
+.tier2-list a + a::before,
+.tier2-list a + .tier2-busy + a::before {
+  content: " · ";
+  color: var(--fg-muted);
+}
+
+/* Per-provider fallback styling. When the chain rolls forward, JS adds
+ * .is-fallback to ONLY the specific <a data-provider="..."> link that was
+ * throttled / errored — the other provider names render normally. Italic +
+ * dotted underline are subtle enough not to scream "broken" but clear once
+ * the user looks. */
+.tier2-attribution a.is-fallback {
+  font-style: italic;
+  text-decoration-style: dotted;
+}
+/* Small "busy ~7s" chip appended after the throttled provider's link when
+ * Tier-2 is in fallback. Quieter than the credit itself so it reads as
+ * ancillary info — the kind of thing a user notices on a second look.
+ * Stays roman for legibility against the italicised provider name. */
+.tier2-busy {
+  font-style: normal;
+  font-size: 0.95em; /* relative to footer's already-small 0.75rem */
+  color: var(--fg-muted);
+  opacity: 0.85;
+  white-space: nowrap;
 }
 
 @media (max-width: 480px) {
@@ -699,6 +801,25 @@ footer {
 
 .app-version.is-hidden {
   opacity: 0;
+}
+
+/* The version tag itself is pointer-events:none so it never intercepts clicks
+ * on page content behind it. Re-enable hits inside the link so it remains
+ * clickable while preserving the inert wrapper. Muted look matches the tag;
+ * underline only on real hover so touch / focus doesn't flicker decoration. */
+.app-version-link {
+  color: inherit;
+  text-decoration: none;
+  pointer-events: auto;
+}
+.app-version-link:focus-visible {
+  text-decoration: underline;
+  outline: none;
+}
+@media (hover: hover) {
+  .app-version-link:hover {
+    text-decoration: underline;
+  }
 }
 
 /* --- Tokenized tile control (prototype) --- */
@@ -818,6 +939,26 @@ footer {
   display: inline-flex;
   align-items: center;
   margin: 0;
+}
+
+/* Suppress iOS Safari's long-press defaults inside tiles. Our touch handler
+ * uses long-press for the info-card balloon; the browser's competing
+ * behaviour is:
+ *   - text-selection magnifier (invert-video → word selected on release) →
+ *     killed by `-webkit-user-select: none`
+ *   - drag-preview on draggable elements (the persistent inverse-video that
+ *     stays until release) → killed by `-webkit-user-drag: none` + suppressing
+ *     the iOS callout
+ * Applied to the tile AND all its descendants since iOS sometimes shows
+ * these UIs on a child <button>/<span> even when the parent suppresses them.
+ * The drag-and-drop reorder still works on desktop because it's mouse-based
+ * (HTML5 drag events) — `user-drag: none` only blocks the iOS touch-preview. */
+.tile,
+.tile * {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-user-drag: none;
 }
 
 .tile-check {

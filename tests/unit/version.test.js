@@ -3,9 +3,10 @@ import {
   resolveVersion,
   shouldHide,
   recordVersion,
+  commitUrl,
   VERSION_STORE_KEY,
 } from "../../site/js/version.js";
-import { applyVersionToken, buildVersion, shortSha } from "../../scripts/stamp-version.mjs";
+import { applyVersionToken, applyShaToken, buildVersion, shortSha } from "../../scripts/stamp-version.mjs";
 
 function memStorage(initial = {}) {
   const data = { ...initial };
@@ -94,6 +95,37 @@ describe("recordVersion", () => {
   });
 });
 
+describe("commitUrl", () => {
+  it("builds a GitHub commit URL for a 7-char hex SHA", () => {
+    expect(commitUrl("abc1234")).toBe("https://github.com/apailthorp/qmtweb/commit/abc1234");
+  });
+
+  it("accepts a full 40-char hex SHA", () => {
+    const long = "abcdef1234567890abcdef1234567890abcdef12";
+    expect(commitUrl(long)).toBe(`https://github.com/apailthorp/qmtweb/commit/${long}`);
+  });
+
+  it("returns null for the unstamped placeholder (local dev)", () => {
+    expect(commitUrl("__APP_VERSION_SHA__")).toBeNull();
+  });
+
+  it("returns null for the 'local' fallback from shortSha()", () => {
+    expect(commitUrl("local")).toBeNull();
+  });
+
+  it("returns null for empty / undefined / null", () => {
+    expect(commitUrl("")).toBeNull();
+    expect(commitUrl(undefined)).toBeNull();
+    expect(commitUrl(null)).toBeNull();
+  });
+
+  it("rejects non-hex / shape-mismatched values to avoid broken links", () => {
+    expect(commitUrl("not-a-sha")).toBeNull();
+    expect(commitUrl("abc12")).toBeNull(); // too short
+    expect(commitUrl("xyz1234")).toBeNull(); // non-hex
+  });
+});
+
 describe("stamp-version helpers", () => {
   it("buildVersion composes semver + sha with a middot", () => {
     expect(buildVersion("1.0.0", "abc1234")).toBe("v1.0.0 · abc1234");
@@ -109,6 +141,25 @@ describe("stamp-version helpers", () => {
   it("applyVersionToken is a no-op when the token is absent", () => {
     const html = `<html data-version="v1.0.0 · abc1234"></html>`;
     expect(applyVersionToken(html, "v9.9.9 · zzz")).toBe(html);
+  });
+
+  it("applyShaToken replaces every SHA token occurrence", () => {
+    const html = `<div data-sha="__APP_VERSION_SHA__">__APP_VERSION_SHA__</div>`;
+    expect(applyShaToken(html, "abc1234")).toBe(
+      `<div data-sha="abc1234">abc1234</div>`,
+    );
+  });
+
+  it("applyShaToken leaves __APP_VERSION__ alone (no prefix collision)", () => {
+    // The two tokens share a 13-char prefix; the SHA replacer must not chew
+    // the version token, and vice-versa. Belt-and-suspenders coverage.
+    const html = `<html data-version="__APP_VERSION__" data-sha="__APP_VERSION_SHA__"></html>`;
+    expect(applyShaToken(html, "abc1234")).toBe(
+      `<html data-version="__APP_VERSION__" data-sha="abc1234"></html>`,
+    );
+    expect(applyVersionToken(html, "v1.0.0 · abc1234")).toBe(
+      `<html data-version="v1.0.0 · abc1234" data-sha="__APP_VERSION_SHA__"></html>`,
+    );
   });
 
   it("shortSha prefers GITHUB_SHA (truncated to 7 chars)", () => {

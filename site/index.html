@@ -51,7 +51,7 @@
                   autocapitalize="off"
                   autocorrect="off"
                   spellcheck="false"
-                  placeholder="Add ICAO, city, airport, or any phrase…"
+                  placeholder="Add ICAO, city, or airport search phrase…"
                   aria-describedby="icao-search-status"
                 />
                 <button
@@ -208,11 +208,11 @@
       </section>
 
       <footer>
-        <p>Data: <a href="https://aviationweather.gov/">aviationweather.gov</a>, <a href="https://www.weather.gov/">NOAA NWS</a>, <a href="https://www.king5.com/radar">KING 5</a>.</p>
+        <p>Data: <a href="https://aviationweather.gov/">aviationweather.gov</a>, <a href="https://www.weather.gov/">NOAA NWS</a>, <a href="https://www.king5.com/radar">KING 5</a>, <span id="tier2-attribution" class="tier2-attribution"><span id="tier2-list" class="tier2-list"><a href="https://ai.google.dev/" data-provider="gemini">Gemini</a><a href="https://openrouter.ai/" data-provider="openrouter">OpenRouter</a><a href="https://www.cerebras.ai/" data-provider="cerebras">Cerebras</a><a href="https://groq.com/" data-provider="groq">Groq</a></span> (Online ↗ natural-language).</span></p>
       </footer>
     </main>
 
-    <div id="app-version" class="app-version">__APP_VERSION__</div>
+    <div id="app-version" class="app-version" data-sha="__APP_VERSION_SHA__">__APP_VERSION__</div>
 
     <script type="module" src="./js/main.js"></script>
   </body>
