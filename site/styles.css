@@ -567,6 +567,17 @@ button {
   border-bottom: 1px solid #f0f0f0;
   color: var(--fg);
 }
+/* Same iOS long-press suppression as .tile (see the tile rules). Our touch
+ * handler uses long-press for the truncation balloon; without these the
+ * browser shows its text-selection magnifier + leaves a word selected on
+ * release. Applied to the button AND descendants because iOS sometimes shows
+ * the magnifier on the inner <span> even when the button is non-selectable. */
+.icao-result,
+.icao-result * {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
 
 .icao-search-results li:last-child .icao-result {
   border-bottom: none;
@@ -928,6 +939,26 @@ footer p { margin: 0; }
   display: inline-flex;
   align-items: center;
   margin: 0;
+}
+
+/* Suppress iOS Safari's long-press defaults inside tiles. Our touch handler
+ * uses long-press for the info-card balloon; the browser's competing
+ * behaviour is:
+ *   - text-selection magnifier (invert-video → word selected on release) →
+ *     killed by `-webkit-user-select: none`
+ *   - drag-preview on draggable elements (the persistent inverse-video that
+ *     stays until release) → killed by `-webkit-user-drag: none` + suppressing
+ *     the iOS callout
+ * Applied to the tile AND all its descendants since iOS sometimes shows
+ * these UIs on a child <button>/<span> even when the parent suppresses them.
+ * The drag-and-drop reorder still works on desktop because it's mouse-based
+ * (HTML5 drag events) — `user-drag: none` only blocks the iOS touch-preview. */
+.tile,
+.tile * {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-user-drag: none;
 }
 
 .tile-check {

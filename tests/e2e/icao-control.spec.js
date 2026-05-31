@@ -263,7 +263,12 @@ test.describe("ICAO tiles — local autocomplete search", () => {
     await result.click();
 
     await expect(page.locator(tile("KSFO"))).toHaveClass(/\bis-active\b/);
-    await expect(page.locator("#icao-query")).toHaveValue("");
+    // v1.4.0 keep-results-visible UX: the query + dropdown stay up so the
+    // user can add more from the same search. The clicked row goes
+    // disabled + "active" so it can't be added twice; the rest stay clickable.
+    await expect(page.locator("#icao-query")).toHaveValue("KSFO");
+    await expect(result).toBeDisabled();
+    await expect(result).toContainText(/active/i);
     expect(await idsCodes(page)).toEqual([...DEFAULT_6, "KSFO"]);
   });
 
@@ -510,7 +515,7 @@ test.describe("ICAO tiles — online search (mocked PHP proxy)", () => {
     await expect(page.locator("#icao-search-results button[data-add-icao='KGEG']")).toBeVisible();
   });
 
-  test("auto-collapses back to the prior mode after a selection", async ({ page }) => {
+  test("after auto-expanded Online select, panel stays expanded until × dismisses + snaps back to collapsed", async ({ page }) => {
     await page.route("**/api/resolve.php**", (route) =>
       route.fulfill({
         status: 200,
@@ -532,14 +537,23 @@ test.describe("ICAO tiles — online search (mocked PHP proxy)", () => {
     await page.locator("#icao-search-external").click();
     await expect(page.locator("#manage-toggle")).toHaveAttribute("aria-expanded", "true");
 
-    // Pick the result — panel should snap back to collapsed because the user
-    // didn't enter edit mode by hand.
-    await page.locator("#icao-search-results button[data-add-icao='KGEG']").click();
-    await expect(page.locator("#manage-toggle")).toHaveAttribute("aria-expanded", "false");
+    // v1.4.0: picking a result no longer auto-collapses. Panel stays
+    // expanded; the dropdown stays visible; the picked row goes disabled.
+    const result = page.locator("#icao-search-results button[data-add-icao='KGEG']");
+    await result.click();
+    await expect(page.locator("#manage-toggle")).toHaveAttribute("aria-expanded", "true");
+    await expect(result).toBeDisabled();
+    await expect(page.locator("#icao-query")).toHaveValue("Spokane");
     expect(await idsCodes(page)).toContain("KGEG");
+
+    // Tapping × clears the query AND snaps back to the prior collapsed state
+    // (since the search auto-expanded the panel earlier).
+    await page.locator("#icao-query-clear").click();
+    await expect(page.locator("#manage-toggle")).toHaveAttribute("aria-expanded", "false");
+    await expect(page.locator("#icao-query")).toHaveValue("");
   });
 
-  test("stays expanded after selection if the user opened the panel manually", async ({ page }) => {
+  test("stays expanded after selection if the user opened the panel manually; × leaves it expanded", async ({ page }) => {
     await page.route("**/api/resolve.php**", (route) =>
       route.fulfill({
         status: 200,
@@ -556,9 +570,47 @@ test.describe("ICAO tiles — online search (mocked PHP proxy)", () => {
     await expect(page.locator("#manage-toggle")).toHaveAttribute("aria-expanded", "true");
     await page.locator("#icao-query").fill("Spokane");
     await page.locator("#icao-search-external").click();
-    await page.locator("#icao-search-results button[data-add-icao='KGEG']").click();
+    const result = page.locator("#icao-search-results button[data-add-icao='KGEG']");
+    await result.click();
     // Still expanded — the user is in edit mode on purpose.
     await expect(page.locator("#manage-toggle")).toHaveAttribute("aria-expanded", "true");
+    // v1.4.0: query + dropdown stay; selected row disabled.
+    await expect(page.locator("#icao-query")).toHaveValue("Spokane");
+    await expect(result).toBeDisabled();
+
+    // × clears query but does NOT collapse — only the auto-expand path snaps
+    // back. The user manually opened this panel; they keep edit mode.
+    await page.locator("#icao-query-clear").click();
+    await expect(page.locator("#manage-toggle")).toHaveAttribute("aria-expanded", "true");
+    await expect(page.locator("#icao-query")).toHaveValue("");
+  });
+
+  test("manual Edit-toggle collapse dismisses the active search session", async ({ page }) => {
+    await page.route("**/api/resolve.php**", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          groups: [
+            { interpreted: "Nearest METAR to Spokane, WA", stations: [{ icao: "KGEG", name: "Spokane Intl", distance_km: 8 }] },
+          ],
+        }),
+      }),
+    );
+
+    // Panel already open from beforeEach. Run a search; results appear.
+    await page.locator("#icao-query").fill("Spokane");
+    await page.locator("#icao-search-external").click();
+    const result = page.locator("#icao-search-results button[data-add-icao='KGEG']");
+    await expect(result).toBeVisible();
+    await expect(page.locator("#icao-query")).toHaveValue("Spokane");
+
+    // Click Edit (manage-toggle) to collapse manually — also dismisses
+    // the active search: query clears, dropdown hides, status clears.
+    await page.locator("#manage-toggle").click();
+    await expect(page.locator("#manage-toggle")).toHaveAttribute("aria-expanded", "false");
+    await expect(page.locator("#icao-query")).toHaveValue("");
+    await expect(page.locator("#icao-search-results")).toBeHidden();
   });
 
   test("clear × button is hidden when empty, visible when typing, and clears + aborts on click", async ({ page }) => {

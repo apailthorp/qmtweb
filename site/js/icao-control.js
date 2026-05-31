@@ -18,7 +18,7 @@
 //   * A hidden <input name="ids"> is kept in sync for the GET submit.
 
 import { DEFAULT_SEED, DEFAULT_SELECTED, seedAirport } from "./airports.js";
-import { LIST_MIN, LIST_MAX } from "./storage.js";
+import { LIST_MIN, LIST_MAX, createCustomNamesStore } from "./storage.js";
 import { isValidIcao } from "./metar.js";
 import { loadAirports, searchAirports } from "./search.js";
 
@@ -26,11 +26,20 @@ function uniq(codes) {
   return Array.from(new Set(codes));
 }
 
-function describeIcao(icao, lookupByIcao) {
+function describeIcao(icao, lookupByIcao, customNames) {
+  // Source priority:
+  //   1. Static seed (DEFAULT_SEED) — curated short names for the prepopulated
+  //      Pacific NW list, always present.
+  //   2. Loaded bundled dataset (airports.json) — ~12k entries with name+city.
+  //   3. Custom names captured from Online ↗ adds (e.g. KSMP = "Stampede Pass"
+  //      from aviationweather.gov), persisted in localStorage. Fallback for
+  //      AWC weather sites that aren't in the bundled airports dataset.
   const seed = seedAirport(icao);
   if (seed) return seed.name;
   const looked = lookupByIcao?.get(icao);
   if (looked) return `${looked.name}${looked.city ? ` — ${looked.city}` : ""}`;
+  const custom = customNames?.get(icao);
+  if (custom) return custom;
   return null;
 }
 
@@ -269,6 +278,22 @@ export function initIcaoControl({
   let dataset = null;
   let datasetPromise = null;
 
+  // Custom-name side-table (Online ↗ adds). Loaded once at init; mutated +
+  // persisted whenever the user adds an ICAO from an Online search result.
+  // describeIcao() consults this AFTER the static seed + bundled dataset, so
+  // it only fills gaps for stations that aren't in either built-in source
+  // (typical case: AWC weather sites like KSMP).
+  const customNamesStore = createCustomNamesStore();
+  const customNames = new Map(Object.entries(customNamesStore.load()));
+  function rememberCustomName(icao, name) {
+    if (!icao || !name) return;
+    if (customNames.get(icao) === name) return; // no-op
+    customNames.set(icao, name);
+    const out = {};
+    customNames.forEach((v, k) => { out[k] = v; });
+    customNamesStore.save(out);
+  }
+
   // Cache the in-flight load so concurrent callers (e.g. fast keystrokes) all
   // await the SAME promise and receive the real dataset. Returning early while a
   // load was in flight used to hand back a still-null dataset, making the first
@@ -394,7 +419,12 @@ export function initIcaoControl({
 
     // Name lives OUTSIDE the pill so the pill stays a code-only chip (matching
     // the collapsed look); the name shows beside it when expanded.
-    const name = describeIcao(icao, lookupByIcao);
+    const name = describeIcao(icao, lookupByIcao, customNames);
+    // Tooltip text for the long-press / hover balloon. Only shown when the
+    // tile actually overflows (markTruncatedTiles() flags `.has-overflow`).
+    // Tiles without a name get the bare ICAO — the chip can't overflow on
+    // its own, so `has-overflow` won't fire and the tooltip stays hidden.
+    li.dataset.tooltip = name ? `${icao} — ${name}` : icao;
     let nameEl = null;
     if (name) {
       nameEl = document.createElement("span");
@@ -661,6 +691,7 @@ export function initIcaoControl({
     }
   }
 
+
   function renderResults(results) {
     if (!searchResults) return;
     // Any rerender invalidates whatever row the balloon was pointing at.
@@ -752,6 +783,11 @@ export function initIcaoControl({
         btn.type = "button";
         btn.className = "icao-result";
         btn.dataset.addIcao = s.icao;
+        // Stash the AWC-provided station name on the button so the click
+        // handler can persist it. Stations that aren't in our bundled
+        // airports.json (typical AWC weather sites like KSMP = Stampede Pass)
+        // would otherwise show only the bare ICAO on their tile after add.
+        if (s.name) btn.dataset.addName = String(s.name);
         const isListed = list.includes(s.icao);
         const isSelected = selected.includes(s.icao);
         btn.disabled = isSelected || (full && !isListed);
@@ -848,7 +884,16 @@ export function initIcaoControl({
     renderOnlineGroups([]);
     setStatus("");
     updateClearButton();
-    query.focus();
+    // If the search auto-expanded a collapsed panel, return to that prior
+    // state now that the user has explicitly dismissed the search. Pairs
+    // with the manageToggle path: × clears + restores, Edit collapses + clears.
+    if (expandedForOnline) {
+      expandedForOnline = false;
+      setOpen(false);
+      manageToggle?.focus({ preventScroll: true });
+    } else {
+      query.focus();
+    }
   });
 
   // Initial paint of the clear button (hidden when the input starts empty).
@@ -973,7 +1018,7 @@ export function initIcaoControl({
     const datasetReady = dataset !== null;
     const looksReal =
       isValidIcao(up) &&
-      (!datasetReady || describeIcao(up, lookupByIcao) !== null);
+      (!datasetReady || describeIcao(up, lookupByIcao, customNames) !== null);
     if (looksReal) {
       e.preventDefault();
       query.value = trimmed.slice(0, trimmed.length - lastWord.length).replace(/[ ,]+$/, "");
@@ -1073,28 +1118,40 @@ export function initIcaoControl({
     // visible state we missed via touchend on flaky touch hardware.
     cancelLongPress();
     hideResultTooltip();
+    // Online result rows carry a `data-add-name` with the AWC-supplied
+    // station name. Persist it so the tile can render the friendly name
+    // (e.g. "Stampede Pass, WA, US" for KSMP) even though KSMP isn't in
+    // our bundled airports dataset. Tile renders pull from describeIcao,
+    // which now consults the customNames map.
+    if (btn.dataset.addName) {
+      rememberCustomName(btn.dataset.addIcao, btn.dataset.addName);
+    }
     if (addAndSelect(btn.dataset.addIcao)) {
-      query.value = "";
-      renderResults([]);
-      setStatus("");
-      updateClearButton();
-      // If runOnlineSearch auto-expanded us from collapsed, snap back now
-      // that the user has made a selection — they didn't ask for edit mode.
-      // Move focus to the Edit toggle so keyboard users keep an explicit
-      // focus target (otherwise focus falls back to <body> on collapse).
-      if (expandedForOnline) {
-        expandedForOnline = false;
-        setOpen(false);
-        manageToggle?.focus({ preventScroll: true });
-      } else {
-        query.focus();
-      }
+      // Keep the query + dropdown visible after a selection so the user can
+      // add more results from the same search. Update the clicked row in
+      // place (active + disabled) so duplicates aren't possible. Two explicit
+      // dismissals end the search session:
+      //   1. × clear button → empties the query and snaps back to the prior
+      //      expanded/collapsed state (preserving auto-expand semantics)
+      //   2. Edit toggle to collapse → also clears the search (see the
+      //      manageToggle handler below)
+      const hint = btn.querySelector(".icao-result-hint");
+      if (hint) hint.textContent = "active";
+      btn.disabled = true;
+      query.focus();
     }
   });
 
   // --- Tile interactions: check toggle / remove / reorder ---
 
   tiles.addEventListener("click", (e) => {
+    // Defensive cleanup — any tile click definitively ends any in-flight
+    // long-press. touchend's preventDefault already suppresses the click
+    // after a successful long-press; this catches the rare case where the
+    // tooltip is still visible but the timer hasn't fired yet (fast tap
+    // through the long-press threshold).
+    cancelLongPress();
+    hideResultTooltip();
     const toggle = e.target.closest("button[data-toggle-icao]");
     if (toggle) {
       e.preventDefault();
@@ -1114,6 +1171,68 @@ export function initIcaoControl({
       const icao = move.dataset.moveIcao;
       const delta = move.dataset.direction === "up" ? -1 : 1;
       if (moveTo(icao, list.indexOf(icao) + delta)) commit();
+    }
+  });
+
+  // --- Tile truncation tooltip ---
+  //
+  // Same balloon used by search results, reused for tiles in expanded mode
+  // when the name overflows. Scoped to the tile body — touches that start
+  // on the drag handle (`⋮⋮`) or the row controls (↑↓−) are left alone so
+  // drag-and-drop and the buttons keep working without competing with the
+  // long-press timer. Reuses the module-level touchPressTimer / touchTooltipShown
+  // and the cancelLongPress() helper defined for the search-results path
+  // — only one finger can press at a time, so shared state is safe.
+  function isTileReservedArea(node) {
+    return !!(node && node.closest && node.closest(".tile-drag, .tile-controls"));
+  }
+
+  // Helper: matches any tile with a tooltip while the panel is expanded.
+  // Truncation-based gating (the .has-overflow class set by markTruncatedTiles)
+  // proved unreliable on iOS Safari for flex children with `min-width: 0` —
+  // scrollWidth reads as already-clipped, missing real overflows on tiles like
+  // KHQM ("Bowerman — Hoquiam"). The user list is small (1-20 airports) and
+  // long-press for an info card is welcome regardless, so we fire on any
+  // expanded tile that carries a tooltip.
+  function eligibleTile(target) {
+    if (isTileReservedArea(target)) return null;
+    const tile = target.closest(".tile[data-tooltip]");
+    return tile && isOpen() ? tile : null;
+  }
+
+  tiles?.addEventListener("mouseover", (e) => {
+    const target = eligibleTile(e.target);
+    if (target) showResultTooltip(target);
+  });
+  tiles?.addEventListener("mouseout", (e) => {
+    const target = e.target.closest(".tile[data-tooltip]");
+    if (target && !target.contains(e.relatedTarget)) hideResultTooltip();
+  });
+  tiles?.addEventListener("touchstart", (e) => {
+    const target = eligibleTile(e.target);
+    if (!target) return;
+    cancelLongPress();
+    touchTooltipShown = false;
+    touchPressTimer = setTimeout(() => {
+      showResultTooltip(target);
+      touchTooltipShown = true;
+      touchPressTimer = null;
+    }, 450);
+  }, { passive: true });
+  tiles?.addEventListener("touchmove", () => {
+    cancelLongPress();
+    if (touchTooltipShown) { hideResultTooltip(); touchTooltipShown = false; }
+  }, { passive: true });
+  tiles?.addEventListener("touchcancel", () => {
+    cancelLongPress();
+    if (touchTooltipShown) { hideResultTooltip(); touchTooltipShown = false; }
+  });
+  tiles?.addEventListener("touchend", (e) => {
+    cancelLongPress();
+    if (touchTooltipShown) {
+      hideResultTooltip();
+      touchTooltipShown = false;
+      e.preventDefault(); // suppress synthetic click after a successful long-press
     }
   });
 
@@ -1192,7 +1311,28 @@ export function initIcaoControl({
     // Manual toggle: user wants explicit control of the panel state, so drop
     // the auto-collapse intent that runOnlineSearch may have set.
     expandedForOnline = false;
-    setOpen(!isOpen());
+    const wasOpen = isOpen();
+    setOpen(!wasOpen);
+    // Manual collapse dismisses any active search session too — pairs with
+    // the × button as the two ways to end the "results stay visible after
+    // selection" mode. When opening (was closed → now open) we leave the
+    // query alone; the user might be returning to a typed phrase mid-edit.
+    if (wasOpen) {
+      // Cancel any in-flight Online call so a late response doesn't repaint
+      // a freshly-dismissed dropdown.
+      if (onlineAbort) {
+        onlineAbort.abort();
+        onlineAbort = null;
+        onlineSeq++;
+        onlineBtn?.classList.remove("is-loading");
+        onlineBtn?.removeAttribute("aria-busy");
+      }
+      query.value = "";
+      renderResults([]);
+      renderOnlineGroups([]);
+      setStatus("");
+      updateClearButton();
+    }
   });
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && isOpen()) {

@@ -136,6 +136,62 @@ export function createQueryStore(storage = globalThis.localStorage ?? null) {
   };
 }
 
+// --- Custom airport names (Online ↗ adds) ------------------------------------
+// When the user adds a station from the Online ↗ search (e.g. KSMP =
+// "Stampede Pass, WA"), the name comes from aviationweather.gov's bbox feed
+// — NOT from the bundled airports.json or the static seed. Without
+// persistence, the tile would show only the ICAO once added. This side-table
+// keeps that name available across reloads so the tile can render the full
+// label the user saw in the dropdown.
+//
+// Shape on disk: { "<ICAO>": "<name>", ... }
+// Stored separately from the ICAO list so removing an airport doesn't have
+// to mutate two records, and so future schema changes to the main store
+// don't touch the names cache.
+
+export const NAMES_KEY = "qmtweb.icao.names.v1";
+
+export function createCustomNamesStore(storage = globalThis.localStorage ?? null) {
+  const s = safeStorage(storage);
+  return {
+    load() {
+      if (!s) return {};
+      try {
+        const raw = s.getItem(NAMES_KEY);
+        if (raw === null) return {};
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+        const out = {};
+        for (const [k, v] of Object.entries(parsed)) {
+          if (typeof k === "string" && typeof v === "string" && v.trim() !== "") {
+            out[k] = v;
+          }
+        }
+        return out;
+      } catch {
+        return {};
+      }
+    },
+
+    save(map) {
+      if (!s) return;
+      try {
+        const clean = {};
+        for (const [k, v] of Object.entries(map ?? {})) {
+          if (typeof k === "string" && typeof v === "string" && v.trim() !== "") {
+            clean[k] = v;
+          }
+        }
+        s.setItem(NAMES_KEY, JSON.stringify(clean));
+      } catch {
+        // Non-fatal — over-quota or storage gone mid-session.
+      }
+    },
+
+    available: s !== null,
+  };
+}
+
 export function createStore(storage = globalThis.localStorage ?? null) {
   const s = safeStorage(storage);
 
