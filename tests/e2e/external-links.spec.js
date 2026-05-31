@@ -10,12 +10,15 @@ import { test, expect } from "@playwright/test";
 
 const FOOTER_LINKS = [
   { label: "aviationweather.gov", url: "https://aviationweather.gov/",       marker: /aviation weather/i },
-  { label: "NOAA NWS",           url: "https://www.weather.gov/",            marker: /national weather service/i },
-  { label: "KING 5",             url: "https://www.king5.com/radar",         marker: /radar/i },
-  // Tier-2 LLM intent extraction for Online ↗ search runs on Gemini; credit
-  // alongside the other data sources. Marker matches the AI Studio landing
-  // page ("Google AI for developers" / "Gemini API").
-  { label: "Google Gemini",      url: "https://ai.google.dev/",              marker: /gemini|google ai/i },
+  { label: "NOAA NWS",            url: "https://www.weather.gov/",           marker: /national weather service/i },
+  { label: "KING 5",              url: "https://www.king5.com/radar",        marker: /radar/i },
+  // Tier-2 LLM providers in the multi-provider chain. Each is credited even
+  // when the local deploy doesn't have its API key — the site supports them
+  // as a capability list. Markers match each provider's homepage content.
+  { label: "Google Gemini",       url: "https://ai.google.dev/",             marker: /gemini|google ai/i },
+  { label: "OpenRouter",          url: "https://openrouter.ai/",             marker: /openrouter|model|api/i },
+  { label: "Cerebras",            url: "https://www.cerebras.ai/",           marker: /cerebras/i },
+  { label: "Groq",                url: "https://groq.com/",                  marker: /groq/i },
 ];
 
 const stripSlash = (u) => u.replace(/\/+$/, "");

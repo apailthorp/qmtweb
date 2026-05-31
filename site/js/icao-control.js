@@ -34,17 +34,12 @@ function describeIcao(icao, lookupByIcao) {
   return null;
 }
 
-// Subtle footer cue for Tier-2 health. When the most recent Online call fell
-// back (rate-limited / error) we italicize the credited provider's name,
-// append a small "busy 58s" chip that *counts down in real time*, and surface
-// a plain-English explanation on hover. When the countdown hits zero the chip
-// flips to "ready" so the user knows they aren't retrying too early.
-//
-// Multi-provider: the credited brand may change between calls as the chain
-// rolls over. The footer rewrites its link text + href on every Online call
-// to reflect whichever provider served (or was last sticky-current). A
-// successful subsequent call clears the degradation styling. State is
-// intentionally NOT persisted across reloads.
+// Subtle footer cue for Tier-2 health. The footer lists ALL providers in the
+// chain (Gemini · OpenRouter · Cerebras · Groq) as static credits. When the
+// chain rolls forward on a 429 / error, we italicize ONLY the specific
+// provider's name + append a small "busy 58s" chip that counts down in real
+// time. A successful subsequent call clears the styling. State is intentionally
+// NOT persisted across reloads.
 
 // Module-level countdown bookkeeping. Stored here (not inside
 // markTier2Attribution) so a second invocation cleanly cancels the prior
@@ -57,50 +52,37 @@ let tier2RetryAt = 0;
 // not when the daily quota resets.
 let tier2CountdownScope = null;
 
-// Update the credited provider's brand text + URL in the footer. Called on
-// every Online response (success OR error-with-tier2-info) so the footer
-// reflects whoever is currently sticky in the chain. No-op if the page hasn't
-// shipped the Tier-2 attribution span (defensive).
-function applyTier2Brand(attribution) {
-  const el = document.getElementById("tier2-attribution");
-  if (!el || !attribution) return;
-  const link = el.querySelector("a");
-  if (!link) return;
-  if (attribution.name && link.textContent !== attribution.name) {
-    link.textContent = attribution.name;
-  }
-  if (attribution.url && link.href !== attribution.url) {
-    link.href = attribution.url;
-  }
-}
-
-function markTier2Attribution(state, detail, attribution) {
+function markTier2Attribution(state, detail, provider) {
   const el = document.getElementById("tier2-attribution");
   if (!el) return;
-  const link = el.querySelector("a");
 
-  // Always update brand + clean prior decoration first — idempotent. A second
-  // "ok" call from a recovered chain clears successfully even if no prior
-  // fallback existed.
-  applyTier2Brand(attribution);
+  // Clear all prior per-provider state — idempotent. A second "ok" call after
+  // a recovered chain clears successfully even if no prior fallback existed.
+  el.querySelectorAll("a[data-provider]").forEach((a) => {
+    a.classList.remove("is-fallback");
+    a.removeAttribute("title");
+  });
   if (tier2CountdownTimer) {
     clearInterval(tier2CountdownTimer);
     tier2CountdownTimer = null;
   }
   el.querySelector(".tier2-busy")?.remove();
 
-  if (state !== "fallback") {
-    el.classList.remove("is-fallback");
-    if (link) link.removeAttribute("title");
-    return;
-  }
+  if (state !== "fallback" || !provider) return;
 
-  el.classList.add("is-fallback");
+  // Find the specific provider link to decorate. If it's not in the static
+  // HTML list (e.g. a provider added to the chain but not yet credited in
+  // markup), silently skip — we don't want to invent UI for unknown brands.
+  const link = el.querySelector(`a[data-provider="${provider}"]`);
+  if (!link) return;
+  link.classList.add("is-fallback");
 
-  // Hover summary (title attribute) — composed once at fallback-time. The
-  // chip text below updates per tick, but the summary doesn't change as the
-  // countdown progresses (the scope / limit don't shift).
-  let summary = "Gemini is unavailable — Online searches are using the deterministic fallback.";
+  // Hover summary (title attribute on the throttled link). Composed from
+  // whatever detail the server gave us. Generic across providers — only
+  // Gemini supplies the rich google.rpc structure today; OpenAI-compat
+  // providers fill `message` and leave the rest null.
+  const brand = link.textContent || provider;
+  let summary = `${brand} is unavailable — chain rolled forward.`;
   const scope = detail?.scope ?? null;
   if (detail) {
     const scopeWord = scope === "per_day"
@@ -116,7 +98,7 @@ function markTier2Attribution(state, detail, attribution) {
     const scopeText = scopeWord ? `${scopeWord} quota` : "rate-limit";
     const limitText = limit ? ` of ${limit}` : "";
     const retryText = retrySecs !== null ? ` Retry in ~${humanRetry(retrySecs)}.` : "";
-    summary = `Gemini ${scopeText}${limitText} hit — using deterministic fallback.${retryText}`;
+    summary = `${brand} ${scopeText}${limitText} hit — chain rolled forward.${retryText}`;
 
     // Caveat for the daily case: Google's retryDelay is a per-request
     // back-off hint, NOT the time until the daily quota resets — which is
@@ -124,24 +106,26 @@ function markTier2Attribution(state, detail, attribution) {
     // like a quota-reset timer; the user waits 7s, retries, and gets 429
     // again until the actual daily reset.
     if (scope === "per_day" && retrySecs !== null) {
-      summary += "\n\nNote: this is Google's suggested back-off between requests, "
-        + "not when the daily quota resets. Free-tier daily quotas typically reset "
-        + "at midnight Pacific.";
+      summary += "\n\nNote: this is the provider's suggested back-off between "
+        + "requests, not when the daily quota resets. Free-tier daily quotas "
+        + "typically reset at midnight Pacific.";
     }
 
     // Append the unmodified upstream error.message so the user can verify
     // our interpretation against the source. \n is honoured by native title
     // tooltips in every browser we care about.
     if (typeof detail.message === "string" && detail.message.trim()) {
-      summary += "\n\n— Full Google error —\n" + detail.message.trim();
+      summary += `\n\n— Full ${brand} error —\n` + detail.message.trim();
     }
   }
-  if (link) link.title = summary;
+  link.title = summary;
 
-  // Build the chip element once; we mutate its textContent on each tick.
+  // Insert the chip immediately after the throttled link so the visual
+  // pairing reads "Gemini *busy 30s* · OpenRouter · Cerebras …" — chip
+  // sits next to the provider it describes, not orphaned at the end.
   const chip = document.createElement("span");
   chip.className = "tier2-busy";
-  el.append(chip);
+  link.after(chip);
 
   // If we know the retry window, anchor a wall-clock deadline and tick.
   // Computing remaining from `Date.now()` (rather than decrementing a
@@ -153,7 +137,7 @@ function markTier2Attribution(state, detail, attribution) {
     : null;
   if (retrySecs === null) {
     // No retry info from the provider — show a static chip, no countdown.
-    chip.textContent = " · busy";
+    chip.textContent = " busy";
     return;
   }
   tier2CountdownScope = scope;
@@ -168,15 +152,18 @@ function markTier2Attribution(state, detail, attribution) {
 // fighting with the chip.
 function tickTier2Countdown() {
   const el = document.getElementById("tier2-attribution");
-  if (!el || !el.classList.contains("is-fallback")) {
+  // Fallback state lives on a specific <a data-provider="..."> link now (not
+  // on the wrapper span). If no link is flagged, an external clear happened
+  // → stop the timer cleanly. Same for a removed chip.
+  const flagged = el?.querySelector("a[data-provider].is-fallback");
+  const chip = el?.querySelector(".tier2-busy");
+  if (!flagged || !chip) {
     if (tier2CountdownTimer) {
       clearInterval(tier2CountdownTimer);
       tier2CountdownTimer = null;
     }
     return;
   }
-  const chip = el.querySelector(".tier2-busy");
-  if (!chip) return;
   const remainingMs = tier2RetryAt - Date.now();
   if (remainingMs <= 0) {
     // Predicted window has passed. For per-minute quotas that means a slot
@@ -186,11 +173,11 @@ function tickTier2Countdown() {
     // "daily limit" to indicate they'll likely keep getting 429 until the
     // actual reset (midnight Pacific). 'unknown' scope is treated like
     // per-minute (best-effort) because we have no better signal.
-    chip.textContent = tier2CountdownScope === "per_day" ? " · daily limit" : " · ready";
+    chip.textContent = tier2CountdownScope === "per_day" ? " daily limit" : " ready";
     clearInterval(tier2CountdownTimer);
     tier2CountdownTimer = null;
   } else {
-    chip.textContent = ` · busy ${humanRetry(Math.ceil(remainingMs / 1000))}`;
+    chip.textContent = ` busy ${humanRetry(Math.ceil(remainingMs / 1000))}`;
   }
 }
 
@@ -847,23 +834,23 @@ export function initIcaoControl({
       const res = await fetch(`./api/resolve.php?q=${encodeURIComponent(q)}`, { signal: onlineAbort.signal });
       if (seq !== onlineSeq) return;
       const data = await res.json().catch(() => null);
-      // Subtle footer cue: italicize the credited provider's name + show a
-      // small "busy ~7s" chip when Tier-2 fell back on this call. Reset to
-      // neutral on a successful Tier-2 response. The credited brand may swap
-      // between providers as the chain rolls over — `data.tier2_attribution`
-      // carries the brand text + URL to render in the footer link. Quota
-      // detail (scope, limit, retry window) comes from server-side parsing
-      // of provider 429 bodies (Gemini's google.rpc.RetryInfo is the richest).
+      // Subtle footer cue: italicize the specific provider that fell back on
+      // this call + show a small "busy ~7s" chip next to its name. The other
+      // providers in the chain list render normally. Reset to neutral on a
+      // successful response. Quota detail (scope, limit, retry window) comes
+      // from server-side parsing of provider 429 bodies (Gemini's
+      // google.rpc.RetryInfo is the richest; OpenAI-compat providers give us
+      // just the error message).
       //
       // Fires on both success (data) and structured errors (data with `error`),
       // since the server includes tier2 metadata on 404s too so the user can
-      // see "Gemini busy" when the failure was provider-driven.
+      // see which provider was throttled when the failure was provider-driven.
       const tier2 = data?.tier2;
-      const attribution = data?.tier2_attribution;
+      const provider = data?.tier2_provider;
       if (tier2 === "live" || tier2 === "off") {
-        markTier2Attribution("ok", null, attribution);
+        markTier2Attribution("ok", null, null);
       } else if (tier2 === "fallback") {
-        markTier2Attribution("fallback", data?.tier2_detail, attribution);
+        markTier2Attribution("fallback", data?.tier2_detail, provider);
       }
       if (!res.ok || !data) {
         renderOnlineGroups([]);

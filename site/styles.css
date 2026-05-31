@@ -698,8 +698,12 @@ footer {
   padding-top: 0.75rem;
   border-top: 1px solid var(--border);
   color: var(--fg-muted);
-  font-size: 0.85rem;
+  /* Smaller than body text — credits are reference info, not primary content.
+   * Provider list (Gemini · OpenRouter · Cerebras · Groq) takes a fair bit
+   * of horizontal space; smaller helps it wrap less aggressively on mobile. */
+  font-size: 0.75rem;
 }
+footer p { margin: 0; }
 
 /* Keep a credit + its parenthetical aside on the same line — wraps as one
  * unit to the next row instead of breaking between the link and the "(...)"
@@ -714,20 +718,22 @@ footer {
  * about why Online ↗ stopped returning multi-group results. Set by JS on a
  * fallback response from resolve.php; cleared on the next successful Tier-2
  * call. Hover the link for a plain-English explanation (set via title). */
-.tier2-attribution.is-fallback {
+/* Per-provider fallback styling. When the chain rolls forward, JS adds
+ * .is-fallback to ONLY the specific <a data-provider="..."> link that was
+ * throttled / errored — the other provider names render normally. Italic +
+ * dotted underline are subtle enough not to scream "broken" but clear once
+ * the user looks. */
+.tier2-attribution a.is-fallback {
   font-style: italic;
-}
-.tier2-attribution.is-fallback a {
   text-decoration-style: dotted;
 }
-/* Small "busy ~7s" chip appended after the parenthetical when Tier-2 is in
- * fallback. Quieter than the credit itself so it reads as ancillary info —
- * the kind of thing a user notices on a second look. Stays roman (not
- * italic) so the chip text is more legible than the surrounding italicised
- * credit at small sizes. */
+/* Small "busy ~7s" chip appended after the throttled provider's link when
+ * Tier-2 is in fallback. Quieter than the credit itself so it reads as
+ * ancillary info — the kind of thing a user notices on a second look.
+ * Stays roman for legibility against the italicised provider name. */
 .tier2-busy {
   font-style: normal;
-  font-size: 0.85em;
+  font-size: 0.95em; /* relative to footer's already-small 0.75rem */
   color: var(--fg-muted);
   opacity: 0.85;
   white-space: nowrap;
