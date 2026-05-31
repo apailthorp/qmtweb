@@ -1,5 +1,5 @@
 import { validateIcaoList } from "./metar.js";
-import { initIcaoControl } from "./icao-control.js";
+import { initIcaoControl, initTier2Health } from "./icao-control.js";
 import { createStore, createQueryStore } from "./storage.js";
 import { initVersionTag } from "./version.js";
 
@@ -121,3 +121,8 @@ queryEl?.addEventListener("input", clearError);
 
 // Show the deployed version stamp (bottom-left; hides while scrolled up).
 initVersionTag();
+
+// Prune the footer Tier-2 provider list to only configured providers.
+// Best-effort: if /api/health.php doesn't exist (older deploy, http-server
+// in dev/CI) the call silently no-ops and the full static list stays.
+initTier2Health();

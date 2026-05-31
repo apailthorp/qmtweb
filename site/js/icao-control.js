@@ -34,12 +34,42 @@ function describeIcao(icao, lookupByIcao) {
   return null;
 }
 
-// Subtle footer cue for Tier-2 health. The footer lists ALL providers in the
-// chain (Gemini · OpenRouter · Cerebras · Groq) as static credits. When the
-// chain rolls forward on a 429 / error, we italicize ONLY the specific
-// provider's name + append a small "busy 58s" chip that counts down in real
-// time. A successful subsequent call clears the styling. State is intentionally
-// NOT persisted across reloads.
+// Subtle footer cue for Tier-2 health. The footer lists every configured
+// provider in the chain (Gemini · OpenRouter · Cerebras · Groq) as static
+// credits. When the chain rolls forward on a 429 / error, we italicize ONLY
+// the specific provider's name + append a small "busy 58s" chip that counts
+// down in real time. A successful subsequent call clears the styling. State
+// is intentionally NOT persisted across reloads.
+
+// Prune the static footer list to only credit providers this deploy can
+// actually call. Fires once on init from a page-level entry point; calls
+// the /api/health.php endpoint which reports which API keys are configured
+// in qmtweb-secrets.php. On failure (older deploys without health.php, or
+// http-server in dev/CI which can't run PHP) we silently bail and leave the
+// full static list in place — degraded but not broken.
+export async function initTier2Health() {
+  const list = document.getElementById("tier2-list");
+  if (!list) return;
+  try {
+    const res = await fetch("./api/health.php", { cache: "no-store" });
+    if (!res.ok) return;
+    const data = await res.json().catch(() => null);
+    const providers = Array.isArray(data?.tier2_providers) ? data.tier2_providers : [];
+    if (!providers.length) return; // no data → leave HTML as-is
+    const configured = new Set(
+      providers.filter((p) => p && p.configured && typeof p.name === "string").map((p) => p.name),
+    );
+    // Remove (not just hide) unconfigured links so the CSS adjacent-sibling
+    // separator selector reflects the actual visible order. display:none
+    // would leave the link in the DOM and the separator rule would still see
+    // it as adjacent, dropping " · " incorrectly.
+    list.querySelectorAll("a[data-provider]").forEach((a) => {
+      if (!configured.has(a.dataset.provider)) a.remove();
+    });
+  } catch {
+    // Network error / endpoint missing — leave the static HTML untouched.
+  }
+}
 
 // Module-level countdown bookkeeping. Stored here (not inside
 // markTier2Attribution) so a second invocation cleanly cancels the prior

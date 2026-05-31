@@ -28,6 +28,12 @@ test.describe("footer data-source links are live", () => {
   test.describe.configure({ retries: 2 });
 
   test("footer hrefs match the link-health list (keeps this spec honest)", async ({ page }) => {
+    // Block /api/health.php so the runtime configured-providers prune doesn't
+    // fire. This spec is a registry check — every link in the markup must be
+    // in FOOTER_LINKS — independent of which providers happen to have keys in
+    // the dev / CI environment. The endpoint exists to prune the live footer
+    // to actually-configured providers in production; tested in isolation.
+    await page.route("**/api/health.php", (route) => route.abort());
     await page.goto("/");
     const hrefs = await page.locator("footer a").evaluateAll((els) => els.map((a) => a.href));
     expect(hrefs.map(stripSlash).sort()).toEqual(
