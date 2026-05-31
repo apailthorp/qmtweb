@@ -278,6 +278,15 @@ export function initIcaoControl({
   let dataset = null;
   let datasetPromise = null;
 
+  // Pending requestAnimationFrame id for markTruncatedTiles. Declared up
+  // here (not next to the function) because markTruncatedTiles is a
+  // hoisted function declaration whose body is callable before its source
+  // line via the initial renderTiles() at the bottom of this function;
+  // a `let` declared near the function would still be in the temporal
+  // dead zone at that point and throw on read. See the comment on
+  // markTruncatedTiles for the coalescing rationale.
+  let markTruncateRafId = null;
+
   // Custom-name side-table (Online ↗ adds). Loaded once at init; mutated +
   // persisted whenever the user adds an ICAO from an Online search result.
   // describeIcao() consults this AFTER the static seed + bundled dataset, so
@@ -715,10 +724,18 @@ export function initIcaoControl({
   //
   // Deferred to the next animation frame so layout has settled after
   // renderTiles() / setOpen() — synchronous measurement returns stale
-  // dimensions on iOS during the flex reflow.
+  // dimensions on iOS during the flex reflow. `markTruncateRafId` (declared
+  // at the top of initIcaoControl with the other state vars to dodge the
+  // TDZ — markTruncatedTiles is hoisted with its body but a `let` here
+  // wouldn't be readable from the initial renderTiles() call) coalesces
+  // redundant calls inside a single frame: ResizeObserver fires multiple
+  // times during a window resize / orientation change, and without coalescing
+  // each callback queues its own rAF doing identical work.
   function markTruncatedTiles() {
     if (!tiles) return;
+    if (markTruncateRafId !== null) return; // already scheduled this frame
     const apply = () => {
+      markTruncateRafId = null;
       const open = isOpen();
       for (const li of tiles.querySelectorAll(".tile")) {
         const name = li.querySelector(".tile-name");
@@ -727,7 +744,7 @@ export function initIcaoControl({
       }
     };
     if (typeof requestAnimationFrame === "function") {
-      requestAnimationFrame(apply);
+      markTruncateRafId = requestAnimationFrame(apply);
     } else {
       apply();
     }
