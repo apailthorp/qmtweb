@@ -34,6 +34,157 @@ function describeIcao(icao, lookupByIcao) {
   return null;
 }
 
+// Subtle footer cue for Tier-2 health. When the most recent Online call fell
+// back (rate-limited / error) we italicize the Gemini attribution, append a
+// small "busy 58s" chip that *counts down in real time*, and surface a
+// plain-English explanation on hover. When the countdown hits zero the chip
+// flips to "ready" so the user knows they aren't retrying too early.
+// A successful subsequent call clears everything. State is intentionally NOT
+// persisted across reloads — fresh load, fresh check; the next Online query
+// reasserts the live state.
+
+// Module-level countdown bookkeeping. Stored here (not inside
+// markGeminiAttribution) so a second invocation cleanly cancels the prior
+// timer instead of leaving a stale interval running against a removed chip.
+let geminiCountdownTimer = null;
+let geminiRetryAt = 0;
+// Scope of the current fallback ("per_day" / "per_minute" / "unknown" / null)
+// — drives the post-countdown chip text. We can't say "ready" after a
+// per-day window because Google's retryDelay is a per-request back-off hint,
+// not when the daily quota resets.
+let geminiCountdownScope = null;
+
+function markGeminiAttribution(state, detail) {
+  const el = document.getElementById("gemini-attribution");
+  if (!el) return;
+  const link = el.querySelector("a");
+
+  // Always cancel any prior countdown + chip before re-applying. Idempotent:
+  // a second "ok" state clears successfully even if no prior fallback existed.
+  if (geminiCountdownTimer) {
+    clearInterval(geminiCountdownTimer);
+    geminiCountdownTimer = null;
+  }
+  el.querySelector(".gemini-busy")?.remove();
+
+  if (state !== "fallback") {
+    el.classList.remove("is-fallback");
+    if (link) link.removeAttribute("title");
+    return;
+  }
+
+  el.classList.add("is-fallback");
+
+  // Hover summary (title attribute) — composed once at fallback-time. The
+  // chip text below updates per tick, but the summary doesn't change as the
+  // countdown progresses (the scope / limit don't shift).
+  let summary = "Gemini is unavailable — Online searches are using the deterministic fallback.";
+  const scope = detail?.scope ?? null;
+  if (detail) {
+    const scopeWord = scope === "per_day"
+      ? "daily"
+      : scope === "per_minute"
+        ? "per-minute"
+        : null;
+    const retrySecs = Number.isFinite(detail.retry_after_seconds)
+      ? detail.retry_after_seconds
+      : null;
+    const limit = Number.isFinite(detail.limit) ? detail.limit : null;
+
+    const scopeText = scopeWord ? `${scopeWord} quota` : "rate-limit";
+    const limitText = limit ? ` of ${limit}` : "";
+    const retryText = retrySecs !== null ? ` Retry in ~${humanRetry(retrySecs)}.` : "";
+    summary = `Gemini ${scopeText}${limitText} hit — using deterministic fallback.${retryText}`;
+
+    // Caveat for the daily case: Google's retryDelay is a per-request
+    // back-off hint, NOT the time until the daily quota resets — which is
+    // typically midnight Pacific. Without this note, "Retry in ~7s" looks
+    // like a quota-reset timer; the user waits 7s, retries, and gets 429
+    // again until the actual daily reset.
+    if (scope === "per_day" && retrySecs !== null) {
+      summary += "\n\nNote: this is Google's suggested back-off between requests, "
+        + "not when the daily quota resets. Free-tier daily quotas typically reset "
+        + "at midnight Pacific.";
+    }
+
+    // Append the unmodified upstream error.message so the user can verify
+    // our interpretation against the source. \n is honoured by native title
+    // tooltips in every browser we care about.
+    if (typeof detail.message === "string" && detail.message.trim()) {
+      summary += "\n\n— Full Google error —\n" + detail.message.trim();
+    }
+  }
+  if (link) link.title = summary;
+
+  // Build the chip element once; we mutate its textContent on each tick.
+  const chip = document.createElement("span");
+  chip.className = "gemini-busy";
+  el.append(chip);
+
+  // If we know the retry window, anchor a wall-clock deadline and tick.
+  // Computing remaining from `Date.now()` (rather than decrementing a
+  // counter) means a backgrounded tab snaps back to the correct value when
+  // it regains focus — `setInterval` is throttled in background tabs but
+  // we don't accumulate drift.
+  const retrySecs = detail && Number.isFinite(detail.retry_after_seconds)
+    ? Math.max(0, detail.retry_after_seconds)
+    : null;
+  if (retrySecs === null) {
+    // No retry info from Google — show a static chip, no countdown.
+    chip.textContent = " · busy";
+    return;
+  }
+  geminiCountdownScope = scope;
+  geminiRetryAt = Date.now() + retrySecs * 1000;
+  tickGeminiCountdown();
+  geminiCountdownTimer = setInterval(tickGeminiCountdown, 1000);
+}
+
+// One tick of the busy/ready countdown. Reads the current fallback state
+// from the DOM so an external clear (markGeminiAttribution("ok", ...) or a
+// page-level reset) silently stops the interval on the next tick instead of
+// fighting with the chip.
+function tickGeminiCountdown() {
+  const el = document.getElementById("gemini-attribution");
+  if (!el || !el.classList.contains("is-fallback")) {
+    if (geminiCountdownTimer) {
+      clearInterval(geminiCountdownTimer);
+      geminiCountdownTimer = null;
+    }
+    return;
+  }
+  const chip = el.querySelector(".gemini-busy");
+  if (!chip) return;
+  const remainingMs = geminiRetryAt - Date.now();
+  if (remainingMs <= 0) {
+    // Predicted window has passed. For per-minute quotas that means a slot
+    // is genuinely free → "ready". For per-day, Google's retryDelay was a
+    // per-request back-off hint, not a quota-reset countdown — so we don't
+    // tell the user "ready" when they're still over the daily limit; show
+    // "daily limit" to indicate they'll likely keep getting 429 until the
+    // actual reset (midnight Pacific). 'unknown' scope is treated like
+    // per-minute (best-effort) because we have no better signal.
+    chip.textContent = geminiCountdownScope === "per_day" ? " · daily limit" : " · ready";
+    clearInterval(geminiCountdownTimer);
+    geminiCountdownTimer = null;
+  } else {
+    chip.textContent = ` · busy ${humanRetry(Math.ceil(remainingMs / 1000))}`;
+  }
+}
+
+// Format seconds into a short human string used by both the visible chip and
+// the hover summary. Tier-2 retry windows are usually <60s (per-minute
+// quota) or up to several hours (per-day, but Google often returns the
+// short-window suggestion). Keep it compact: "7s" / "3m" / "1h 23m".
+function humanRetry(seconds) {
+  const s = Math.max(0, Math.round(seconds));
+  if (s < 60)   return `${s}s`;
+  if (s < 3600) return `${Math.round(s / 60)}m`;
+  const h = Math.floor(s / 3600);
+  const m = Math.round((s % 3600) / 60);
+  return m ? `${h}h ${m}m` : `${h}h`;
+}
+
 export function initIcaoControl({
   control,        // #tile-control wrapper (toggles .is-open)
   hiddenIds,      // hidden <input name="ids"> for form submit
@@ -362,16 +513,99 @@ export function initIcaoControl({
   //   "notfound" → "no result" glyph (empty stations / 404 from proxy)
   //   "error"    → warning glyph (network failure / dataset unavailable)
   //   ""         → neutral text only; clears any prior indicator
-  function setStatus(text, state = "") {
+  //
+  // `trailIcon: "magnify"` appends an inline magnifier SVG after the message —
+  // used by the "no local match — try Online" hint so the affordance physically
+  // points at the magnifier button. Built as a DOM node (not innerHTML) so the
+  // text portion stays escape-safe.
+  function setStatus(text, state = "", trailIcon = "") {
     if (!searchStatusEl) return;
     searchStatusEl.textContent = text ?? "";
+    if (trailIcon === "magnify") {
+      const svgNS = "http://www.w3.org/2000/svg";
+      const svg = document.createElementNS(svgNS, "svg");
+      svg.setAttribute("class", "status-trail-icon");
+      svg.setAttribute("viewBox", "0 0 16 16");
+      svg.setAttribute("width", "12");
+      svg.setAttribute("height", "12");
+      svg.setAttribute("aria-hidden", "true");
+      svg.setAttribute("focusable", "false");
+      const g = document.createElementNS(svgNS, "g");
+      g.setAttribute("stroke", "currentColor");
+      g.setAttribute("stroke-width", "1.6");
+      g.setAttribute("fill", "none");
+      g.setAttribute("stroke-linecap", "round");
+      const circle = document.createElementNS(svgNS, "circle");
+      circle.setAttribute("cx", "7"); circle.setAttribute("cy", "7"); circle.setAttribute("r", "4.5");
+      const line = document.createElementNS(svgNS, "line");
+      line.setAttribute("x1", "10.2"); line.setAttribute("y1", "10.2");
+      line.setAttribute("x2", "14");   line.setAttribute("y2", "14");
+      g.append(circle, line);
+      svg.append(g);
+      searchStatusEl.append(svg);
+    }
     searchStatusEl.classList.toggle("is-loading",  state === "loading");
     searchStatusEl.classList.toggle("is-notfound", state === "notfound");
     searchStatusEl.classList.toggle("is-error",    state === "error");
   }
 
+  // --- Result-row truncation tooltip ---
+  //
+  // The result rows use `text-overflow: ellipsis` to clip long airport names.
+  // Native `title` tooltips are slow (~700ms hover delay) and unstyled, and
+  // they're flaky on disabled buttons; instead we render a styled balloon
+  // appended to <body> so it escapes the dropdown's `overflow-y: auto` clip
+  // (which would otherwise truncate any in-flow tooltip). The balloon shows
+  // only when the name column is actually overflowing — non-truncated rows
+  // hover silently.
+  let resultTooltip = document.getElementById("icao-result-tooltip");
+  if (!resultTooltip) {
+    resultTooltip = document.createElement("div");
+    resultTooltip.id = "icao-result-tooltip";
+    resultTooltip.className = "result-tooltip";
+    resultTooltip.setAttribute("role", "tooltip");
+    document.body.append(resultTooltip);
+  }
+
+  function showResultTooltip(btn) {
+    const text = btn.dataset.tooltip;
+    if (!text) return;
+    resultTooltip.textContent = text;
+    resultTooltip.classList.add("is-visible");
+    // Measure AFTER the tip becomes visible so we get its real height.
+    const target = btn.getBoundingClientRect();
+    const tip = resultTooltip.getBoundingClientRect();
+    // Prefer placing above the row; fall back below when the top edge would
+    // clip against the viewport. Horizontal: clamp inside the viewport with
+    // a 4px safety margin so a long name doesn't run off the edge.
+    const above = target.top - tip.height - 6;
+    const below = target.bottom + 6;
+    const top = above >= 4 ? above : below;
+    const left = Math.max(4, Math.min(window.innerWidth - tip.width - 4, target.left));
+    resultTooltip.style.top  = `${top}px`;
+    resultTooltip.style.left = `${left}px`;
+  }
+  function hideResultTooltip() {
+    resultTooltip.classList.remove("is-visible");
+  }
+
+  // After every render, walk the freshly-mounted buttons and flag those whose
+  // name span actually overflows (scrollWidth > clientWidth). Only flagged
+  // rows trigger the balloon — non-truncated names hover silently. Skip when
+  // the dropdown is hidden (display:none → zero dimensions → false positives).
+  function markTruncatedResults() {
+    if (!searchResults || searchResults.hidden) return;
+    for (const btn of searchResults.querySelectorAll(".icao-result")) {
+      const name = btn.querySelector(".icao-result-name");
+      const overflows = !!name && name.scrollWidth > name.clientWidth + 1;
+      btn.classList.toggle("has-overflow", overflows);
+    }
+  }
+
   function renderResults(results) {
     if (!searchResults) return;
+    // Any rerender invalidates whatever row the balloon was pointing at.
+    hideResultTooltip();
     searchResults.innerHTML = "";
     if (results.length === 0) {
       searchResults.hidden = true;
@@ -404,8 +638,16 @@ export function initIcaoControl({
       }
       const nameSpan = document.createElement("span");
       nameSpan.className = "icao-result-name";
-      nameSpan.textContent =
+      const fullName =
         `${a.name}${a.city ? `, ${a.city}` : ""}${a.country ? ` (${a.country})` : ""}`;
+      nameSpan.textContent = fullName;
+      // Tooltip content — surfaced by the custom balloon when the name column
+      // is truncated, and announced via aria-label for screen readers. No
+      // `title` attribute so the native (slow, unstyled) tooltip doesn't fight
+      // the balloon. Markup-only: detection + show/hide live below.
+      const tipLabel = `${a.icao}${a.iata ? ` (${a.iata})` : ""} — ${fullName}`;
+      btn.dataset.tooltip = tipLabel;
+      btn.setAttribute("aria-label", tipLabel);
       const hintSpan = document.createElement("span");
       hintSpan.className = "icao-result-hint";
       hintSpan.textContent = isSelected ? "active" : isListed ? "reactivate" : full ? "list full" : "add";
@@ -414,6 +656,7 @@ export function initIcaoControl({
       item.append(btn);
       searchResults.append(item);
     }
+    markTruncatedResults();
   }
 
   // Render online (nearest-METAR) results into the same dropdown. Station shape:
@@ -424,6 +667,8 @@ export function initIcaoControl({
   // location, so the user can pick from the right interpretation.
   function renderOnlineGroups(groups) {
     if (!searchResults) return;
+    // Any rerender invalidates whatever row the balloon was pointing at.
+    hideResultTooltip();
     searchResults.innerHTML = "";
     const nonEmpty = (groups || []).filter((g) => Array.isArray(g.stations) && g.stations.length);
     if (!nonEmpty.length) {
@@ -461,7 +706,14 @@ export function initIcaoControl({
         const nameSpan = document.createElement("span");
         nameSpan.className = "icao-result-name";
         const dist = typeof s.distance_km === "number" ? ` · ${s.distance_km} km` : "";
-        nameSpan.textContent = `${s.name || s.icao}${dist}`;
+        const fullName = `${s.name || s.icao}${dist}`;
+        nameSpan.textContent = fullName;
+        // Tooltip content surfaced by the custom balloon (see markTruncated()
+        // below); aria-label for screen readers. No native `title` so we don't
+        // get a competing OS tooltip after the half-second hover delay.
+        const tipLabel = `${s.icao} — ${fullName}`;
+        btn.dataset.tooltip = tipLabel;
+        btn.setAttribute("aria-label", tipLabel);
 
         const hintSpan = document.createElement("span");
         hintSpan.className = "icao-result-hint icao-result-online";
@@ -474,6 +726,7 @@ export function initIcaoControl({
         searchResults.append(item);
       }
     }
+    markTruncatedResults();
   }
 
   async function runSearch(q) {
@@ -494,7 +747,11 @@ export function initIcaoControl({
     const results = searchAirports(q.trim(), data, { limit: 8 });
     if (seq !== searchSeq) return;
     renderResults(results);
-    if (results.length === 0) setStatus(`No local match for "${q.trim()}" — try Online.`);
+    if (results.length === 0) {
+      // Append the magnifier glyph so the hint visually points at the Online
+      // button the user should click next. Same icon shape as the button itself.
+      setStatus(`No local match for "${q.trim()}" — try Online `, "", "magnify");
+    }
   }
 
   query.addEventListener("input", () => {
@@ -568,6 +825,17 @@ export function initIcaoControl({
       const res = await fetch(`./api/resolve.php?q=${encodeURIComponent(q)}`, { signal: onlineAbort.signal });
       if (seq !== onlineSeq) return;
       const data = await res.json().catch(() => null);
+      // Subtle footer cue: italicize the Gemini attribution + show a small
+      // "busy ~7s" chip when Tier-2 fell back on this call. Reset to neutral
+      // on a successful Tier-2 response. Quota detail (scope, limit, retry
+      // window) is parsed out of Gemini's 429 body server-side — see
+      // resolve.php's parse_gemini_429_detail().
+      const tier2 = data?.tier2;
+      if (tier2 === "live" || tier2 === "off") {
+        markGeminiAttribution("ok");
+      } else if (tier2 === "fallback") {
+        markGeminiAttribution("fallback", data?.tier2_detail);
+      }
       if (!res.ok || !data) {
         renderOnlineGroups([]);
         // A structured error from the proxy ("couldn't work out a location…")
@@ -651,10 +919,91 @@ export function initIcaoControl({
     }
   });
 
+  // Balloon tooltip wiring — two distinct triggers, never on focus:
+  //
+  //   Desktop: hover the row → show; mouse leaves → hide. Movement onto a
+  //   child element of the same button keeps it visible (relatedTarget guard).
+  //
+  //   Touch:   long-press (~450 ms still on the row) → show + suppress the
+  //   synthetic click so the airport isn't added by the long-press. Release,
+  //   move, or cancel → hide.
+  //
+  // We deliberately do NOT listen on `focusin`: iOS fires focusin during a
+  // tap-down, which used to make the balloon appear AFTER selection and
+  // stick. Screen-reader accessibility is preserved via the button's
+  // `aria-label` (set in render*), which announces the full label whether
+  // or not the visual balloon is shown.
+
+  searchResults?.addEventListener("mouseover", (e) => {
+    const btn = e.target.closest(".icao-result.has-overflow");
+    if (btn) showResultTooltip(btn);
+  });
+  searchResults?.addEventListener("mouseout", (e) => {
+    const btn = e.target.closest(".icao-result.has-overflow");
+    if (btn && !btn.contains(e.relatedTarget)) hideResultTooltip();
+  });
+
+  // Long-press for touch. State is scoped to the dropdown listeners so
+  // multiple rapid touches don't interleave timers across rows.
+  let touchPressTimer = null;
+  let touchTooltipShown = false;
+  function cancelLongPress() {
+    if (touchPressTimer) {
+      clearTimeout(touchPressTimer);
+      touchPressTimer = null;
+    }
+  }
+  searchResults?.addEventListener("touchstart", (e) => {
+    const btn = e.target.closest(".icao-result.has-overflow");
+    if (!btn) return;
+    cancelLongPress();
+    touchTooltipShown = false;
+    // 450 ms is the iOS default long-press threshold; mirrors the Safari
+    // "tap-and-hold" feel users already know from selecting links / images.
+    touchPressTimer = setTimeout(() => {
+      showResultTooltip(btn);
+      touchTooltipShown = true;
+      touchPressTimer = null;
+    }, 450);
+  }, { passive: true });
+  searchResults?.addEventListener("touchmove", () => {
+    // Any drag-like movement cancels the long-press AND dismisses an already-
+    // shown balloon — matches how the iOS text-selection magnifier behaves.
+    cancelLongPress();
+    if (touchTooltipShown) { hideResultTooltip(); touchTooltipShown = false; }
+  }, { passive: true });
+  searchResults?.addEventListener("touchcancel", () => {
+    cancelLongPress();
+    if (touchTooltipShown) { hideResultTooltip(); touchTooltipShown = false; }
+  });
+  searchResults?.addEventListener("touchend", (e) => {
+    cancelLongPress();
+    if (touchTooltipShown) {
+      // Long-press completed: release dismisses the balloon, and we also
+      // suppress the synthetic click so the airport isn't added unintentionally.
+      // Short taps fall through here without preventDefault, so normal
+      // selection still works.
+      hideResultTooltip();
+      touchTooltipShown = false;
+      e.preventDefault();
+    }
+  });
+
+  // The balloon is `position: fixed` — once the user scrolls (page or the
+  // dropdown's own overflow:auto box) the anchored position is stale, so
+  // hide. Re-hover repositions if still pointing at the row.
+  searchResults?.addEventListener("scroll", hideResultTooltip, { passive: true });
+  window.addEventListener("scroll", hideResultTooltip, { passive: true });
+
   searchResults?.addEventListener("click", (e) => {
     const btn = e.target.closest("button[data-add-icao]");
     if (!btn || btn.disabled) return;
     e.preventDefault();
+    // Defensive — any selection always clears the balloon. Belt-and-suspenders
+    // against an in-flight long-press timer that's about to fire, or a stale
+    // visible state we missed via touchend on flaky touch hardware.
+    cancelLongPress();
+    hideResultTooltip();
     if (addAndSelect(btn.dataset.addIcao)) {
       query.value = "";
       renderResults([]);

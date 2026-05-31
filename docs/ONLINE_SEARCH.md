@@ -82,6 +82,10 @@ In cPanel File Manager, **up one level from `public_html`** create
 <?php
 return [
   'GEMINI_API_KEY'    => 'AQ.Ab…your-key…',
+  // Optional: override the Gemini model without redeploying. Leave unset to use
+  // the in-code default (gemini-2.5-flash). Useful when Google rotates which
+  // models are on the free tier — change one line in this file, no code push.
+  // 'GEMINI_MODEL'   => 'gemini-2.5-flash',
   'AVIATIONSTACK_KEY' => 'optional-and-currently-unused',
 ];
 ```

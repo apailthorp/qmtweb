@@ -483,6 +483,16 @@ button {
   gap: 0.4em;
 }
 
+/* Trailing icon appended to status messages (e.g. "try Online" hint). Picks up
+ * the surrounding text colour so it follows the .is-notfound / .is-error
+ * states automatically. */
+.status-trail-icon {
+  flex: 0 0 auto;
+  margin-left: -0.15em;
+  vertical-align: middle;
+  color: var(--accent);
+}
+
 /* When the status has no message, collapse it so the tile-box doesn't
    reserve a phantom row below the query line. The status only takes up
    space when it actually has something to say (loading / not-found /
@@ -601,6 +611,37 @@ button {
  * from the bundled-local matches. */
 .icao-result-hint.icao-result-online { color: var(--accent); }
 
+/* Truncation balloon for result rows.
+ *
+ * Lives at document.body (singleton), positioned via JS each show. `position:
+ * fixed` so it escapes the dropdown's `overflow-y: auto` clip — an inside-the-
+ * scrollbox tooltip would get cropped. Only shown when JS flags a row as
+ * `.has-overflow` (its name span actually overflows); non-truncated rows
+ * hover silently. */
+.result-tooltip {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 100;
+  max-width: min(28rem, 90vw);
+  padding: 0.35rem 0.6rem;
+  background: rgba(28, 32, 40, 0.95);
+  color: #fff;
+  font-size: 0.82rem;
+  line-height: 1.35;
+  border-radius: var(--radius);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(2px);
+  transition: opacity 0.12s ease, transform 0.12s ease;
+  white-space: normal;
+}
+.result-tooltip.is-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
 /* Section divider in the Online results list when an ambiguous query (e.g.
    "Springfield", "King County") resolves to multiple locations — one header
    per group, hidden when only a single group is present. */
@@ -660,6 +701,38 @@ footer {
   font-size: 0.85rem;
 }
 
+/* Keep a credit + its parenthetical aside on the same line — wraps as one
+ * unit to the next row instead of breaking between the link and the "(...)"
+ * clarification (e.g. "Google Gemini (Online ↗ natural-language)."). */
+.nowrap-chunk {
+  white-space: nowrap;
+}
+
+/* Subtle "Tier-2 fell back" cue on the Gemini credit. Italicises the whole
+ * chunk and adds a dotted underline to the link — quiet enough that someone
+ * not looking won't notice, but immediately recognisable to anyone curious
+ * about why Online ↗ stopped returning multi-group results. Set by JS on a
+ * fallback response from resolve.php; cleared on the next successful Tier-2
+ * call. Hover the link for a plain-English explanation (set via title). */
+.gemini-attribution.is-fallback {
+  font-style: italic;
+}
+.gemini-attribution.is-fallback a {
+  text-decoration-style: dotted;
+}
+/* Small "busy ~7s" chip appended after the parenthetical when Tier-2 is in
+ * fallback. Quieter than the credit itself so it reads as ancillary info —
+ * the kind of thing a user notices on a second look. Stays roman (not
+ * italic) so the chip text is more legible than the surrounding italicised
+ * credit at small sizes. */
+.gemini-busy {
+  font-style: normal;
+  font-size: 0.85em;
+  color: var(--fg-muted);
+  opacity: 0.85;
+  white-space: nowrap;
+}
+
 @media (max-width: 480px) {
   main {
     /* Tighter horizontal padding + a bit more bottom room than the base rule,
@@ -699,6 +772,25 @@ footer {
 
 .app-version.is-hidden {
   opacity: 0;
+}
+
+/* The version tag itself is pointer-events:none so it never intercepts clicks
+ * on page content behind it. Re-enable hits inside the link so it remains
+ * clickable while preserving the inert wrapper. Muted look matches the tag;
+ * underline only on real hover so touch / focus doesn't flicker decoration. */
+.app-version-link {
+  color: inherit;
+  text-decoration: none;
+  pointer-events: auto;
+}
+.app-version-link:focus-visible {
+  text-decoration: underline;
+  outline: none;
+}
+@media (hover: hover) {
+  .app-version-link:hover {
+    text-decoration: underline;
+  }
 }
 
 /* --- Tokenized tile control (prototype) --- */

@@ -51,7 +51,18 @@ function http_get_json(string $url, array $headers = [], int $timeout = HTTP_TIM
 }
 
 // POST JSON over HTTPS (used for the LLM call). Returns decoded array or null.
-function http_post_json(string $url, array $payload, array $headers = [], int $timeout = HTTP_TIMEOUT): ?array {
+//
+// $statusOut: optional by-ref out-param that captures the HTTP response code
+// (0 on connect/transport failure). Lets callers differentiate "transport
+// failed" from "API said 429" from "API said 200 with garbage" — needed by
+// gemini_intent() so the client can subtly indicate when Tier-2 fell back.
+//
+// $errorBodyOut: optional by-ref out-param that captures the PARSED non-2xx
+// body when the API returned structured error details (e.g. Gemini 429s carry
+// google.rpc.QuotaFailure / google.rpc.RetryInfo blocks the client can use to
+// say "rate-limited on the daily quota; retry in ~7s"). Null on transport
+// failure or unparseable bodies.
+function http_post_json(string $url, array $payload, array $headers = [], int $timeout = HTTP_TIMEOUT, ?int &$statusOut = null, ?array &$errorBodyOut = null): ?array {
     $ch = curl_init($url);
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
@@ -64,12 +75,18 @@ function http_post_json(string $url, array $payload, array $headers = [], int $t
     ]);
     $body = curl_exec($ch);
     $code = curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+    $statusOut = (int) $code;
+    $errorBodyOut = null;
     // curl_close($ch) intentionally omitted: it has been a no-op since PHP 8.0
     // (the handle is released when $ch goes out of scope) and was deprecated in
     // PHP 8.5, where the call itself emits a notice that would corrupt JSON.
-    if ($body === false || $code < 200 || $code >= 300) return null;
-    $data = json_decode((string) $body, true);
-    return is_array($data) ? $data : null;
+    if ($body === false) return null;
+    $parsed = json_decode((string) $body, true);
+    if ($code < 200 || $code >= 300) {
+        if (is_array($parsed)) $errorBodyOut = $parsed;
+        return null;
+    }
+    return is_array($parsed) ? $parsed : null;
 }
 
 // Great-circle distance in kilometres.

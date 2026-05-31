@@ -12,6 +12,10 @@ const FOOTER_LINKS = [
   { label: "aviationweather.gov", url: "https://aviationweather.gov/",       marker: /aviation weather/i },
   { label: "NOAA NWS",           url: "https://www.weather.gov/",            marker: /national weather service/i },
   { label: "KING 5",             url: "https://www.king5.com/radar",         marker: /radar/i },
+  // Tier-2 LLM intent extraction for Online ↗ search runs on Gemini; credit
+  // alongside the other data sources. Marker matches the AI Studio landing
+  // page ("Google AI for developers" / "Gemini API").
+  { label: "Google Gemini",      url: "https://ai.google.dev/",              marker: /gemini|google ai/i },
 ];
 
 const stripSlash = (u) => u.replace(/\/+$/, "");

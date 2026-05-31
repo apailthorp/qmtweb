@@ -13,6 +13,87 @@ require __DIR__ . '/_lib.php';
 
 const NEAREST_DEFAULT = 6;
 
+// Tier-2 outcome from the most recent gemini_intent() call. The client uses
+// this to subtly indicate "Gemini is degraded" in the footer attribution —
+// see styles.css `.gemini-attribution.is-fallback` and the runOnlineSearch
+// handler in icao-control.js. Values:
+//   'off'       — no GEMINI_API_KEY configured; Tier-2 wasn't even attempted
+//   'live'      — Gemini returned a usable intent
+//   'throttled' — Gemini responded with 429 (rate-limited)
+//   'error'     — any other failure (5xx, network, unparseable response)
+// Mapped to a coarser 'live' / 'fallback' / 'off' for the client.
+function gemini_status(?string $newValue = null): string {
+    static $value = 'off';
+    if ($newValue !== null) $value = $newValue;
+    return $value;
+}
+
+// Structured detail captured from a 429 response (when available). Populated by
+// gemini_intent() from the google.rpc.QuotaFailure / google.rpc.RetryInfo blocks
+// inside Gemini's error body. Shape:
+//   ['scope' => 'per_day'|'per_minute'|'unknown',
+//    'limit' => int|null,
+//    'retry_after_seconds' => int|null]
+// The client uses this to render "rate-limited; retry in ~7s" next to the
+// Gemini credit, so the user knows what's happening and when it might resolve.
+function gemini_detail(?array $newValue = null): ?array {
+    static $value = null;
+    if ($newValue !== null) $value = $newValue;
+    return $value;
+}
+
+// Pull what we can out of a Gemini 429 body. Tolerates missing fields: every
+// path may be absent on edge-case error shapes (older API versions, partial
+// errors). Returns the structured shape gemini_detail() expects.
+//
+// IMPORTANT: `retry_after_seconds` is Google's google.rpc.RetryInfo hint —
+// for per-minute quotas it's meaningful (wait this long and the slot frees);
+// for per-day quotas it's just an inter-request back-off suggestion. The
+// daily quota itself usually resets at midnight Pacific time, not after the
+// retryDelay elapses. The client uses `scope` to pick the right end-state
+// text so we don't claim "ready" while still over the daily limit.
+function parse_gemini_429_detail(?array $errBody): array {
+    $detail = [
+        'scope'               => 'unknown',
+        'limit'               => null,
+        'retry_after_seconds' => null,
+        'quota_id'            => null,
+        // Raw human-readable string from Google's error.message — included
+        // so the client can surface the unmodified upstream text on hover.
+        'message'             => is_string($errBody['error']['message'] ?? null)
+            ? (string) $errBody['error']['message']
+            : null,
+    ];
+    $details = $errBody['error']['details'] ?? null;
+    if (!is_array($details)) return $detail;
+
+    foreach ($details as $d) {
+        if (!is_array($d)) continue;
+        $type = (string) ($d['@type'] ?? '');
+
+        // RetryInfo carries the suggested back-off as e.g. "7s" or "7.42s".
+        if (str_contains($type, 'RetryInfo')) {
+            $delay = (string) ($d['retryDelay'] ?? '');
+            if (preg_match('/^(\d+(?:\.\d+)?)s$/', $delay, $m)) {
+                $detail['retry_after_seconds'] = (int) ceil((float) $m[1]);
+            }
+        }
+
+        // QuotaFailure tells us WHICH quota — per-day vs per-minute — and the
+        // numeric limit. We expose the first violation; multi-violation 429s
+        // are rare in this caller's request pattern.
+        if (str_contains($type, 'QuotaFailure') && !empty($d['violations'][0]) && is_array($d['violations'][0])) {
+            $v = $d['violations'][0];
+            $qid = (string) ($v['quotaId'] ?? '');
+            $detail['quota_id'] = $qid !== '' ? $qid : null;
+            if (stripos($qid, 'PerDay')    !== false) $detail['scope'] = 'per_day';
+            elseif (stripos($qid, 'PerMinute') !== false) $detail['scope'] = 'per_minute';
+            if (isset($v['quotaValue'])) $detail['limit'] = (int) $v['quotaValue'];
+        }
+    }
+    return $detail;
+}
+
 $q = trim($_GET['q'] ?? '');
 if ($q === '') json_err('Type a place, ZIP, or airport to search online.', 422);
 
@@ -53,8 +134,27 @@ if (!$groups) {
     json_err("Couldn't work out a location from \"$q\". Try a city or 5-digit ZIP.", 404);
 }
 
+// Coarse public mapping — the client only needs to know if Tier-2 was
+// degraded (`fallback`) so it can italicize the Gemini attribution. The full
+// 'throttled' / 'error' / 'off' / 'live' detail stays server-side; "off" is
+// indistinguishable from "live" in the UI because Gemini-was-never-asked is
+// not a degradation worth surfacing.
+$tier2Raw    = gemini_status();
+$tier2Public = match ($tier2Raw) {
+    'live'      => 'live',
+    'off'       => 'off',
+    'throttled' => 'fallback',
+    default     => 'fallback', // 'error'
+};
+
+$response = ['groups' => $groups, 'tier2' => $tier2Public];
+// Only attach detail when we actually have parsed quota info (throttled
+// state). 'error' and 'live' / 'off' carry no detail to surface.
+$detail = $tier2Raw === 'throttled' ? gemini_detail() : null;
+if ($detail) $response['tier2_detail'] = $detail;
+
 header('Cache-Control: no-store');
-json_out(['groups' => $groups]);
+json_out($response);
 
 // --- Tier 1: deterministic intent ---------------------------------------------
 // Strip filler, detect a 5-digit ZIP, else treat the remainder as a place name.
@@ -92,7 +192,7 @@ function deterministic_intent(string $q): array {
 // station — only the location to feed the grounded pipeline.
 function gemini_intent(string $q): ?array {
     $key = server_secret('GEMINI_API_KEY');
-    if (!$key) return null;
+    if (!$key) { gemini_status('off'); return null; }
 
     $prompt = 'You extract LOCATION candidates from an aviation-weather query. '
         . 'Station identifiers come from a separate live feed — never from you.'
@@ -126,16 +226,34 @@ function gemini_intent(string $q): ?array {
     // gemini-2.0-flash had its free quota set to 0 in May 2026; gemini-2.5-flash
     // is the current free-tier default). Re-verify on key setup if Tier 2 stops
     // firing — a 429 with `limit: 0` here usually means the model has rotated.
-    $url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
+    //
+    // GEMINI_MODEL override: set `GEMINI_MODEL` in qmtweb-secrets.php (or env)
+    // to swap models without a code deploy. Falls back to the hard-coded default
+    // when unset. Whitespace is trimmed so a stray newline in the secrets file
+    // doesn't produce a 404 from the model endpoint.
+    $model = trim((string) (server_secret('GEMINI_MODEL') ?? 'gemini-2.5-flash'));
+    if ($model === '') $model = 'gemini-2.5-flash';
+    $url = 'https://generativelanguage.googleapis.com/v1beta/models/'
+        . rawurlencode($model) . ':generateContent';
 
     // Pass the key in the x-goog-api-key header (Google's preferred method) rather
     // than a ?key= URL param, so it never lands in server/proxy access logs.
-    $resp = http_post_json($url, $payload, ['x-goog-api-key: ' . $key]);
+    $status = 0; $errBody = null;
+    $resp = http_post_json($url, $payload, ['x-goog-api-key: ' . $key], HTTP_TIMEOUT, $status, $errBody);
+    // Classify the outcome so the client can subtly indicate "Tier-2 fell back"
+    // in the footer. 429 is the common case the user notices ("multi-group
+    // results stopped working"); other failures collapse to a single 'error'.
+    if ($status === 429) {
+        gemini_status('throttled');
+        gemini_detail(parse_gemini_429_detail($errBody));
+        return null;
+    }
+    if (!$resp) { gemini_status('error'); return null; }
     $text = $resp['candidates'][0]['content']['parts'][0]['text'] ?? null;
-    if (!$text) return null;
+    if (!$text) { gemini_status('error'); return null; }
 
     $intent = json_decode($text, true);
-    if (!is_array($intent)) return null;
+    if (!is_array($intent)) { gemini_status('error'); return null; }
 
     // Clean each candidate: keep only ones with a usable ZIP or place. Trim
     // whitespace and validate the ZIP format. Drop empties so the caller can
@@ -150,8 +268,9 @@ function gemini_intent(string $q): ?array {
         if ($zip === '' && $place === '') continue;
         $candidates[] = ['zip' => $zip, 'place' => $place];
     }
-    if (empty($candidates)) return null;
+    if (empty($candidates)) { gemini_status('error'); return null; }
 
+    gemini_status('live');
     return [
         'candidates' => $candidates,
         'count'      => (int) ($intent['count'] ?? NEAREST_DEFAULT),
