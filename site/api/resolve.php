@@ -98,14 +98,29 @@ if ($cachedTier2) {
     }
 }
 
-// Tier-2 live call — only when Tier-1 + cache both came up empty.
+// Tier-2 live call — fires when:
+//   (a) Tier-1 + cache both produced nothing (must escalate), OR
+//   (b) Tier-1 produced exactly one group AND the query looks ambiguous
+//       (short, non-ZIP). Without (b), single-word famously-ambiguous places
+//       like "King County" or "Springfield" lose their multi-group discovery
+//       because Tier-1 always resolves them to one Nominatim result.
+//
+// The "richer-wins" rule: only adopt the Tier-2 intent if it produces MORE
+// groups than Tier-1. Equal groups → keep Tier-1 (no benefit to swap). The
+// successful Tier-2 result is cached regardless, so subsequent "King County"
+// queries serve from cache without re-spending quota.
 $tier2Used   = null;
 $tier2Status = null;
 $tier2Detail = null;
-if (!$groups) {
+$shouldEscalate = empty($groups) || (count($groups) === 1 && !$cacheHit && is_likely_ambiguous($q));
+if ($shouldEscalate) {
     $orchestration = run_tier2_chain($q);
     if ($orchestration['intent']) {
-        $groups = intent_to_groups($orchestration['intent']);
+        $tier2Groups = intent_to_groups($orchestration['intent']);
+        // Adopt Tier-2 if it strictly improves on Tier-1.
+        if (count($tier2Groups) > count($groups)) {
+            $groups = $tier2Groups;
+        }
     }
     $tier2Used   = $orchestration['provider'];
     $tier2Status = $orchestration['status'];
@@ -328,6 +343,35 @@ function intent_to_groups(?array $intent): array {
         ];
     }
     return $groups;
+}
+
+// Cheap heuristic for "this query might be a famously-ambiguous place name
+// even though Tier-1 happened to resolve it to one Nominatim result". Used
+// by the escalation logic to opportunistically probe Tier-2 for richer
+// multi-group answers. Conservative — bails out for ZIPs (always unambiguous)
+// and longer queries (usually carry disambiguating context).
+function is_likely_ambiguous(string $q): bool {
+    // Explicit US ZIP → unambiguous by construction.
+    if (preg_match('/\b\d{5}\b/', $q)) return false;
+    // Strip filler + connectives so "airports near Springfield" counts as
+    // one word ("Springfield"), not three.
+    $stripped = preg_replace(
+        '/\b('
+        . 'nearest|closest|near|both|either|or|and|'
+        . 'airports?|airfields?|airforce|airbase|bases?|field|'
+        . 'metars?|tafs?|stations?|reporting|weather|'
+        . 'to|the|for|me|in|at|of'
+        . ')\b/i',
+        ' ',
+        $q
+    );
+    $stripped = trim(preg_replace('/\s+/', ' ', $stripped));
+    if ($stripped === '') return false;
+    $wordCount = count(explode(' ', $stripped));
+    // 1–3 meaningful words covers the famously-ambiguous bucket
+    // (Springfield / King County / Portland / Boring / WA / Salem / Vienna ...).
+    // 4+ words usually carry explicit disambiguating context.
+    return $wordCount >= 1 && $wordCount <= 3;
 }
 
 // --- Tier 1: deterministic intent ---------------------------------------------
