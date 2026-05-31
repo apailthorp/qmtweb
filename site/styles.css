@@ -1112,7 +1112,14 @@ footer p { margin: 0; }
   transition: none !important;
 }
 .tile:not(.touch-dragging) {
-  transition: transform 0.18s ease;
+  /* Duration matches the inline transition flipTiles() sets during expand/
+   * collapse FLIP animations (0.22s) so that if both rules are in effect
+   * (e.g. a setOpen fires while a tile has a leftover transform), the
+   * timing doesn't visibly mismatch. Inline transitions win on
+   * specificity, but matching the duration keeps behaviour consistent
+   * if/when the inline rule is cleared between flipTiles' final-state
+   * settle and this CSS rule taking over. */
+  transition: transform 0.22s ease;
 }
 /* Drop indicators — expanded mode stacks tiles as rows, so the bar sits on
    the top/bottom edge of the target. Collapsed mode flows chips horizontally,

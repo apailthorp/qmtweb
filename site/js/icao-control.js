@@ -1545,7 +1545,9 @@ export function initIcaoControl({
     }
 
     e.preventDefault(); // prevent page scroll while dragging
-  });
+  }, { passive: false }); // explicit — preventDefault inside; the default for
+                          // non-root targets is already passive: false, but
+                          // declaring it survives future browser-default shifts.
 
   function touchDragFinish(commitDrop, point) {
     if (!touchDrag) return;
