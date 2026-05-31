@@ -10,11 +10,20 @@ METAR-reporting stations. Stations are always grounded in
 | Path | Where it runs | What it queries | Fires |
 |---|---|---|---|
 | **Local autocomplete** | Client (JS) | bundled `site/data/airports.json` (~12,409 airports — ICAO / name / city) | On every keystroke ≥2 chars |
-| **Online Tier 1** (deterministic) | Server (PHP) | zippopotam (US ZIPs) + Nominatim (places) + aviationweather.gov bbox (live METARs) | Click Online ↗ / press Enter |
-| **Online Tier 2** (LLM-assisted) | Server (PHP) → Gemini → same grounded geocode + bbox | Gemini extracts intent (place candidates, count); the geocode + station lookup stay grounded | Same click — runs *before* Tier 1, falls back to Tier 1 silently on no key / quota / parse failure |
+| **Online Tier 1** (deterministic) | Server (PHP) | zippopotam (US ZIPs) + Nominatim (places) + aviationweather.gov bbox (live METARs) | Every Online ↗ click |
+| **Online Tier 2 cache** (free upgrade) | Server (PHP) | 7-day file cache of prior Tier-2 intent results | Same click, after Tier-1; preferred when it has more groups |
+| **Online Tier 2 live** (LLM-assisted) | Server (PHP) → Gemini → same grounded geocode + bbox | Gemini extracts intent (place candidates, count); station lookup stays grounded | Only when Tier-1 + cache both miss, OR (historically — pre-1.4.0) on every click |
 
-Local autocomplete is a separate, instant-and-offline path; the two Online tiers
-share the same `resolve.php` endpoint.
+Local autocomplete is a separate, instant-and-offline path; the three Online
+tiers share the same `resolve.php` endpoint.
+
+**Ordering as of v1.4.0**: Tier-1 runs first (saves the bulk of Gemini calls
+since ZIPs and most place names geocode cleanly). The Tier-2 cache then offers
+a free upgrade for known-ambiguous queries — if a prior live Gemini call
+returned multi-group, we re-use that result. Only when both miss do we
+escalate to a live Gemini call. First-time ambiguous queries (e.g. a
+never-seen "Springfield") get a single Tier-1 group until Gemini sees them
+once and the cache catches the multi-group interpretation.
 
 ## Data flow (one Online ↗ click)
 
@@ -64,13 +73,14 @@ can never name a closed or non-reporting field.
 **422** — empty query
 **404** — `{ "error": "Couldn't work out a location from \"X\". Try a city or 5-digit ZIP." }`
 
-## The Gemini key (Tier 2)
+## Provider keys (Tier 2)
 
-Tier 1 runs without any key. Tier 2 needs `GEMINI_API_KEY`. The key is read by
+Tier 1 runs without any key. Tier 2 needs at least one of `GEMINI_API_KEY`,
+`OPENROUTER_API_KEY`, `CEREBRAS_API_KEY`, `GROQ_API_KEY`. All are read by
 `server_secret()` in `site/api/_lib.php`, which checks in order:
 
-1. Process env (`getenv('GEMINI_API_KEY')`)
-2. `$_SERVER['GEMINI_API_KEY']` (e.g. `.htaccess SetEnv`)
+1. Process env (`getenv(...)`)
+2. `$_SERVER[...]` (e.g. `.htaccess SetEnv`)
 3. A PHP config file **one level above** `public_html` (recommended)
 
 ### Recommended setup on AccuWeb
@@ -80,9 +90,19 @@ In cPanel File Manager, **up one level from `public_html`** create
 
 ```php
 <?php
+// All Tier-2 keys are OPTIONAL — providers without a key are skipped in the
+// chain. Configure as many as you want; the orchestrator stays on whichever
+// one is working and rolls forward only on 429 / error.
 return [
-  'GEMINI_API_KEY'    => 'AQ.Ab…your-key…',
-  'AVIATIONSTACK_KEY' => 'optional-and-currently-unused',
+  'GEMINI_API_KEY'     => 'AQ.Ab…your-key…',
+  // 'GEMINI_MODEL'    => 'gemini-2.5-flash',
+  'OPENROUTER_API_KEY' => '…',
+  // 'OPENROUTER_MODEL' => 'meta-llama/llama-3.2-3b-instruct:free',
+  'CEREBRAS_API_KEY'   => '…',
+  // 'CEREBRAS_MODEL'  => 'gpt-oss-120b', // free roster rotates — verify with /v1/models
+  'GROQ_API_KEY'       => '…',  // NOT Grok / X.ai — Groq is the Sunnyvale chip company
+  // 'GROQ_MODEL'      => 'llama-3.1-8b-instant',
+  'AVIATIONSTACK_KEY'  => 'optional-and-currently-unused',
 ];
 ```
 
@@ -114,8 +134,13 @@ curl -s 'https://pailthorp.net/api/resolve.php?q=Springfield' | jq '.groups | le
 
 | Limit | Value | What hits it |
 |---|---|---|
-| Requests per minute | 20 | Each Online click that goes through to Gemini |
-| Requests per day | ~250 | Total daily across users |
+| Requests per minute | ~20 | Each Online click that goes through to Gemini |
+| Requests per day | ~20 | Per project/model on the free tier — verified against a live 429 in 2026-05 (`quotaId: GenerateRequestsPerDayPerProjectPerModel-FreeTier`, `quotaValue: 20`) |
+
+The daily quota is **per-project**, not per-user, so a single project token
+shared across visitors burns down the same 20/day. Google rotates which models
+and which numeric quotas live on the free tier — re-check by reading the
+`quotaValue` field in a real 429 response if you suspect drift.
 
 When quota is hit, Gemini returns HTTP 429 and `gemini_intent()` returns null;
 the client gets a single-group Tier-1 result with no error visible. Future work

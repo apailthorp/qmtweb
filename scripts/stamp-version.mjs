@@ -21,10 +21,19 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, resolve } from "node:path";
 
 const TOKEN = "__APP_VERSION__";
+const SHA_TOKEN = "__APP_VERSION_SHA__";
 
 // Pure helpers (unit-tested).
 export function applyVersionToken(text, version) {
   return text.split(TOKEN).join(version);
+}
+
+// Stamp the short SHA into a separate token so the client can hyperlink the
+// version tag to the deployed commit without re-parsing the display string.
+// Empty in local dev (no GITHUB_SHA, no git available) — version.js then
+// renders the tag as plain text.
+export function applyShaToken(text, sha) {
+  return text.split(SHA_TOKEN).join(sha);
 }
 
 export function buildVersion(pkgVersion, sha) {
@@ -49,14 +58,22 @@ function main() {
     : resolve(repoRoot, "site/index.html");
 
   const pkg = JSON.parse(readFileSync(resolve(repoRoot, "package.json"), "utf8"));
-  const version = buildVersion(pkg.version, shortSha());
+  const sha = shortSha();
+  const version = buildVersion(pkg.version, sha);
 
   const html = readFileSync(target, "utf8");
   if (!html.includes(TOKEN)) {
     console.warn(`stamp-version: no ${TOKEN} token in ${target}; nothing to stamp.`);
     return;
   }
-  writeFileSync(target, applyVersionToken(html, version));
+  // Stamp the SHA token first, then the version token. Order doesn't actually
+  // matter here — the two tokens share a 13-char prefix (`__APP_VERSION_`) but
+  // diverge at the next char, so neither is a substring of the other, and the
+  // replacements (a short SHA / a "vX.Y.Z · sha" string) contain no token
+  // substrings either. We pick SHA-first as the obvious read order.
+  let next = applyShaToken(html, sha);
+  next = applyVersionToken(next, version);
+  writeFileSync(target, next);
   console.log(`stamp-version: stamped "${version}" into ${target}`);
 }
 

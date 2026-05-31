@@ -41,6 +41,12 @@ infra/*_override.tf.json
 qmtweb-secrets.php
 **/qmtweb-secrets.php
 
+# Operational state (above docroot on the host; never committed)
+#   tier2-state: sticky provider pointer + rollover history
+#   stats:       per-request JSONL log for offline analysis
+qmtweb-tier2-state.json
+qmtweb-stats.jsonl
+
 # Claude Code local-only settings
 .claude/settings.local.json
 

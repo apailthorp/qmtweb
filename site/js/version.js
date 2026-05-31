@@ -17,6 +17,8 @@
 // Full design + troubleshooting: docs/VERSIONING.md
 
 const PLACEHOLDER = "__APP_VERSION__";
+const SHA_PLACEHOLDER = "__APP_VERSION_SHA__";
+const COMMIT_BASE = "https://github.com/apailthorp/qmtweb/commit/";
 export const VERSION_STORE_KEY = "qmtweb.appVersion";
 
 // Turn the raw stamped value into a display string. Unstamped (local dev) or
@@ -25,6 +27,17 @@ export function resolveVersion(raw) {
   const value = (raw ?? "").trim();
   if (!value || value.includes(PLACEHOLDER)) return "dev";
   return value;
+}
+
+// Build the commit-link URL for the deployed SHA, or null when the SHA isn't
+// stamped (local dev / pre-stamp). Hex-only guard: stamp-version writes a 7-
+// char hex SHA from git; anything else (e.g. the literal "local" fallback or
+// an unsubstituted token) returns null so we don't render a broken link.
+export function commitUrl(sha) {
+  const value = (sha ?? "").trim();
+  if (!value || value === SHA_PLACEHOLDER) return null;
+  if (!/^[0-9a-f]{7,40}$/i.test(value)) return null;
+  return COMMIT_BASE + value;
 }
 
 // Decide whether to hide the tag. The tag's home is the bottom of the page; it's
@@ -67,7 +80,23 @@ export function initVersionTag(doc = document) {
   if (!el) return;
 
   const version = resolveVersion(doc.documentElement.dataset.version);
-  el.textContent = version;
+  const href = version === "dev" ? null : commitUrl(el.dataset.sha);
+  if (href) {
+    // Wrap the whole stamp in an anchor pointing at the deployed commit so a
+    // click jumps to the exact source on GitHub. `.app-version` itself is
+    // pointer-events:none (so it never intercepts page clicks); the inner
+    // anchor re-enables hits via CSS (.app-version a { pointer-events: auto }).
+    el.textContent = "";
+    const a = doc.createElement("a");
+    a.href = href;
+    a.target = "_blank";
+    a.rel = "noopener";
+    a.textContent = version;
+    a.className = "app-version-link";
+    el.append(a);
+  } else {
+    el.textContent = version;
+  }
   // Expose for quick support ("what version are you on?") / debugging.
   globalThis.__APP_VERSION__ = version;
 

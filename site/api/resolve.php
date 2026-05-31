@@ -3,58 +3,376 @@
 // "airport with METAR nearest to 98624" or "Ilwaco metar", resolves it to a
 // location, and returns the nearest live METAR-reporting stations.
 //
-// GROUNDED: the LLM (Tier 2) only parses intent — station IDs ALWAYS come from
-// the live aviationweather.gov bbox response, never the model. If GEMINI_API_KEY
-// is unset / quota-spent / errors, it silently falls back to the deterministic
-// Tier-1 parser.
+// GROUNDED: every Tier-2 LLM provider only parses intent — station IDs ALWAYS
+// come from the live aviationweather.gov bbox response, never the model. When
+// no provider is configured / all are throttled / all error, it silently falls
+// back to the deterministic Tier-1 parser.
+//
+// Architecture (v1.4.0):
+//
+//   site/api/_lib.php             — shared helpers (HTTP, cache, intent prompt,
+//                                    normalize_intent, OpenAI-compat caller,
+//                                    sticky-state, stats logging)
+//   site/api/providers/intent-*.php — one adapter per Tier-2 provider
+//   site/api/resolve.php          — this file: Tier-1 first, then cache, then
+//                                    walk the sticky-current Tier-2 chain
+//
+// Tier-2 provider chain (sticky-current):
+//   1. Stay on whoever last worked ('current' in qmtweb-tier2-state.json).
+//   2. If current returns null (no key / 429 / error), walk the preference
+//      list in PROVIDER_CHAIN order, skipping providers already tried this
+//      request. First non-null result wins.
+//   3. On a successful rollover, persist the new current so subsequent
+//      requests start from there. Reasoning: quota distribution and the
+//      operator's stated "no reason not to stay there" preference.
+//
+// Excluded by policy: Grok (X.ai) is dis-preferred. Groq (Sunnyvale, not Elon)
+// is included.
 
 declare(strict_types=1);
 require __DIR__ . '/_lib.php';
+require __DIR__ . '/providers/intent-gemini.php';
+require __DIR__ . '/providers/intent-openrouter.php';
+require __DIR__ . '/providers/intent-cerebras.php';
+require __DIR__ . '/providers/intent-groq.php';
 
-const NEAREST_DEFAULT = 6;
+// Preference order — used for first-ever calls (no sticky state) and as the
+// roll-over walk order. Each entry: provider name (matches state file values)
+// → intent function + status accessor + detail accessor + attribution.
+//
+// Order rationale:
+//   1. Gemini — richest 429 detail surfacing; smallest quota so it's the
+//      "canary" we'd rather burn first when no current is set
+//   2. OpenRouter — operator preference; aggregator with rotating free roster
+//   3. Cerebras — operator preference; generous fixed free quota
+//   4. Groq — also fine; round-trip latency is great when available
+const PROVIDER_CHAIN = [
+    [
+        'name'          => 'gemini',
+        'intent_fn'     => 'gemini_intent',
+        'status_fn'     => 'gemini_status',
+        'detail_fn'     => 'gemini_detail',
+        'attribution'   => GEMINI_ATTRIBUTION,
+    ],
+    [
+        'name'          => 'openrouter',
+        'intent_fn'     => 'openrouter_intent',
+        'status_fn'     => 'openrouter_status',
+        'detail_fn'     => 'openrouter_detail',
+        'attribution'   => OPENROUTER_ATTRIBUTION,
+    ],
+    [
+        'name'          => 'cerebras',
+        'intent_fn'     => 'cerebras_intent',
+        'status_fn'     => 'cerebras_status',
+        'detail_fn'     => 'cerebras_detail',
+        'attribution'   => CEREBRAS_ATTRIBUTION,
+    ],
+    [
+        'name'          => 'groq',
+        'intent_fn'     => 'groq_intent',
+        'status_fn'     => 'groq_status',
+        'detail_fn'     => 'groq_detail',
+        'attribution'   => GROQ_ATTRIBUTION,
+    ],
+];
+
+$reqStartMs = (int) (microtime(true) * 1000);
 
 $q = trim($_GET['q'] ?? '');
 if ($q === '') json_err('Type a place, ZIP, or airport to search online.', 422);
 
-// Tier 2 (free LLM) with silent fallback to Tier 1 (deterministic). Both tiers
-// now return a list of candidates: 1 for unambiguous queries, 2-3 for ambiguous
-// ones like "WA" (state vs. country code) or "King County" (TX vs. WA).
-$intent     = gemini_intent($q) ?? deterministic_intent($q);
-$count      = max(1, min(10, (int) ($intent['count'] ?? NEAREST_DEFAULT)));
-// Cap server-side regardless of what the LLM returned, so a malformed or
-// malicious Gemini response can't trigger an unbounded fan-out of geocode +
-// aviationweather.gov calls. Matches the documented 2-3 candidate contract.
-$candidates = is_array($intent['candidates'] ?? null)
-    ? array_slice($intent['candidates'], 0, 3)
-    : [];
+// Tier-1 first — saves the bulk of LLM quota.
+$tier1Intent = deterministic_intent($q);
+$groups = intent_to_groups($tier1Intent);
+$tier1GroupCount = count($groups);
 
-// Geocode each candidate, collect the nearest stations per location into a
-// group. Silently drop candidates that don't geocode or have no reporters.
-$groups = [];
-foreach ($candidates as $candidate) {
-    if (!is_array($candidate)) continue;
-    $location = null;
-    if (!empty($candidate['zip'])) $location = geocode_place((string) $candidate['zip']);
-    // If the ZIP geocode returned nothing (or there was no ZIP), fall through
-    // to the place name so the candidate still has a chance to resolve.
-    if ($location === null && !empty($candidate['place'])) {
-        $location = geocode_place((string) $candidate['place']);
+// Tier-2 cache upgrade — preferred over Tier-1 when richer (multi-group).
+$cacheHit = false;
+$cachedTier2 = intent_cached_only($q);
+if ($cachedTier2) {
+    $cachedGroups = intent_to_groups($cachedTier2);
+    if (count($cachedGroups) > count($groups)) {
+        $groups = $cachedGroups;
+        $cacheHit = true;
     }
-    if ($location === null) continue;
-    $stations = nearest_metar_stations($location['lat'], $location['lon'], $count);
-    if (!$stations) continue;
-    $groups[] = [
-        'interpreted' => 'Nearest METAR to ' . $location['label'],
-        'stations'    => $stations,
-    ];
+}
+
+// Tier-2 live call — fires when:
+//   (a) Tier-1 + cache both produced nothing (must escalate), OR
+//   (b) Tier-1 produced exactly one group AND the query looks ambiguous
+//       (short, non-ZIP). Without (b), single-word famously-ambiguous places
+//       like "King County" or "Springfield" lose their multi-group discovery
+//       because Tier-1 always resolves them to one Nominatim result.
+//
+// The "richer-wins" rule: only adopt the Tier-2 intent if it produces MORE
+// groups than Tier-1. Equal groups → keep Tier-1 (no benefit to swap). The
+// successful Tier-2 result is cached regardless, so subsequent "King County"
+// queries serve from cache without re-spending quota.
+$tier2Used   = null;
+$tier2Status = null;
+$tier2Detail = null;
+$shouldEscalate = empty($groups) || (count($groups) === 1 && !$cacheHit && is_likely_ambiguous($q));
+if ($shouldEscalate) {
+    $orchestration = run_tier2_chain($q);
+    if ($orchestration['intent']) {
+        $tier2Groups = intent_to_groups($orchestration['intent']);
+        // Adopt Tier-2 if it strictly improves on Tier-1.
+        if (count($tier2Groups) > count($groups)) {
+            $groups = $tier2Groups;
+        }
+    }
+    $tier2Used   = $orchestration['provider'];
+    $tier2Status = $orchestration['status'];
+    $tier2Detail = $orchestration['detail'];
+}
+
+// If cache hit served the result, credit whichever provider is currently
+// sticky (we re-used a cached intent — but the user is still seeing Tier-2
+// quality, and crediting the current provider keeps the footer consistent
+// across consecutive identical queries).
+if ($cacheHit && $tier2Used === null) {
+    $state = tier2_state_load();
+    $stickyName = $state['current'];
+    if ($stickyName) {
+        $tier2Used   = $stickyName;
+        $tier2Status = 'live';
+    } else {
+        // First-ever query, cache hit but no sticky yet — credit the chain head.
+        $tier2Used   = PROVIDER_CHAIN[0]['name'];
+        $tier2Status = 'live';
+    }
 }
 
 if (!$groups) {
-    json_err("Couldn't work out a location from \"$q\". Try a city or 5-digit ZIP.", 404);
+    qmtweb_stats_emit([
+        'q_hash'          => qmtweb_stats_hash_query($q),
+        'q_len'           => strlen($q),
+        'tier1_groups'    => $tier1GroupCount,
+        'tier2_used'      => $tier2Used,
+        'tier2_status'    => $tier2Status,
+        'tier2_cache_hit' => $cacheHit,
+        'retry_after'     => $tier2Detail['retry_after_seconds'] ?? null,
+        'latency_ms'      => (int) (microtime(true) * 1000) - $reqStartMs,
+    ]);
+    // Even on a 404, carry tier2 status so the footer can italicise + show the
+    // 429 detail when applicable. Without this the user sees "couldn't work
+    // out a location" with no hint that Tier-2 is throttled and they're stuck
+    // on Tier-1-only resolution.
+    $errResp = [
+        'error' => "Couldn't work out a location from \"$q\". Try a city or 5-digit ZIP.",
+    ];
+    if ($tier2Status === 'throttled' || $tier2Status === 'error') {
+        $errResp['tier2']             = 'fallback';
+        $errResp['tier2_provider']    = $tier2Used;
+        $errResp['tier2_attribution'] = $tier2Used ? provider_attribution($tier2Used) : null;
+        if ($tier2Detail) $errResp['tier2_detail'] = $tier2Detail;
+    }
+    header('Cache-Control: no-store');
+    json_out($errResp, 404);
 }
 
+// --- Build response -----------------------------------------------------------
+// `tier2` is the coarse public state for the footer-italic indicator:
+//   'live'     — Tier-2 served (live or cached, any provider)
+//   'fallback' — a Tier-2 provider was attempted and failed (degraded)
+//   'off'      — Tier-2 wasn't called this request (Tier-1 sufficed) OR all
+//                providers have no key configured
+$tier2Public = match (true) {
+    $tier2Status === 'live'                   => 'live',
+    $tier2Status === 'throttled'              => 'fallback',
+    $tier2Status === 'error'                  => 'fallback',
+    $tier2Status === null && !$cacheHit       => 'off',
+    default                                   => 'off',
+};
+
+// Resolve the attribution metadata for whichever provider gets footer credit.
+// On a Tier-2 fallback, we still credit the currently-sticky provider (the
+// one we *expected* to serve) — the italic + chip already communicate that
+// it failed, no need to swap the brand to nothing.
+$creditedProvider = $tier2Used ?? (tier2_state_load()['current'] ?? PROVIDER_CHAIN[0]['name']);
+$attribution = provider_attribution($creditedProvider);
+
+$response = [
+    'groups'             => $groups,
+    'tier2'              => $tier2Public,
+    'tier2_provider'     => $creditedProvider,
+    'tier2_attribution'  => $attribution,
+];
+if ($tier2Detail) $response['tier2_detail'] = $tier2Detail;
+
+// Stats emission — every successful resolve gets one line. Failure path
+// emits its own line above so we capture 404s too.
+qmtweb_stats_emit([
+    'q_hash'          => qmtweb_stats_hash_query($q),
+    'q_len'           => strlen($q),
+    'tier1_groups'    => $tier1GroupCount,
+    'tier2_used'      => $tier2Used,
+    'tier2_status'    => $tier2Status,
+    'tier2_cache_hit' => $cacheHit,
+    'retry_after'     => $tier2Detail['retry_after_seconds'] ?? null,
+    'latency_ms'      => (int) (microtime(true) * 1000) - $reqStartMs,
+]);
+
 header('Cache-Control: no-store');
-json_out(['groups' => $groups]);
+json_out($response);
+
+// --- Orchestration ------------------------------------------------------------
+// Walk the chain starting from the sticky current. On 429 / error, move to
+// the next provider in PROVIDER_CHAIN order (skipping already-tried). First
+// non-null result becomes the new sticky current.
+//
+// Returns:
+//   ['intent' => ?array, 'provider' => ?string, 'status' => ?string, 'detail' => ?array]
+// 'intent' is null when every provider in the chain returned null.
+function run_tier2_chain(string $q): array {
+    $state = tier2_state_load();
+    $startName = $state['current']; // null on first-ever call
+
+    // Build ordered chain: sticky current first (if set + valid), then the
+    // remaining providers in PROVIDER_CHAIN order. Each provider tried at
+    // most once per request.
+    $chainOrder = build_chain_order($startName);
+
+    // Capture the FIRST provider's failure detail so the client can render
+    // the fallback indicator with rich info (Gemini's 429 detail surfaces here
+    // when Gemini is the sticky current — most common case).
+    $firstFailStatus   = null;
+    $firstFailDetail   = null;
+    $firstFailProvider = null;
+
+    foreach ($chainOrder as $entry) {
+        $intent = call_user_func($entry['intent_fn'], $q);
+        $status = call_user_func($entry['status_fn']);
+        $detail = call_user_func($entry['detail_fn']);
+
+        if ($intent !== null) {
+            // Success — update sticky state if this isn't already the current.
+            // 'from' on the rollover record is the ORIGINAL sticky (or '(none)'
+            // on first-ever); intermediate failed probes are implicit in the
+            // gap between rollover entries.
+            if ($state['current'] !== $entry['name']) {
+                $reason = $startName ? 'rollover-from-' . $startName : 'initial';
+                $state = tier2_state_record_rollover(
+                    $state,
+                    $startName ?? '(none)',
+                    $entry['name'],
+                    $reason
+                );
+                tier2_state_save($state);
+            }
+            return [
+                'intent'   => $intent,
+                'provider' => $entry['name'],
+                'status'   => $status, // 'live'
+                'detail'   => null,
+            ];
+        }
+
+        if ($firstFailProvider === null) {
+            $firstFailStatus   = $status;
+            $firstFailDetail   = $detail;
+            $firstFailProvider = $entry['name'];
+        }
+    }
+
+    // Every provider returned null — surface the FIRST attempted provider's
+    // detail (most actionable for the user — that's the one we *expected*
+    // to serve and want to explain).
+    return [
+        'intent'   => null,
+        'provider' => $firstFailProvider,
+        'status'   => $firstFailStatus ?? 'error',
+        'detail'   => $firstFailDetail,
+    ];
+}
+
+// Reorder PROVIDER_CHAIN so the sticky current comes first (if it's a known
+// provider). Unknown / null current → use PROVIDER_CHAIN order as-is.
+function build_chain_order(?string $currentName): array {
+    $rest = [];
+    $first = null;
+    foreach (PROVIDER_CHAIN as $entry) {
+        if ($currentName !== null && $entry['name'] === $currentName) {
+            $first = $entry;
+        } else {
+            $rest[] = $entry;
+        }
+    }
+    return $first ? array_merge([$first], $rest) : $rest;
+}
+
+// Look up the attribution block for a provider name. Falls back to the head
+// of the chain when the name is unknown (defensive — stale state file etc.).
+function provider_attribution(string $name): array {
+    foreach (PROVIDER_CHAIN as $entry) {
+        if ($entry['name'] === $name) return $entry['attribution'];
+    }
+    return PROVIDER_CHAIN[0]['attribution'];
+}
+
+// --- Intent → groups pipeline -------------------------------------------------
+// Both Tier-1 and Tier-2 produce the same shape (`['candidates' => [...], 'count' => N]`).
+// This helper turns either one into the public `[{interpreted, stations[]}, ...]`
+// list by geocoding each candidate and grounding it in live aviationweather.gov
+// METAR data. Capped at 3 candidates server-side so a malformed or malicious
+// model response can't trigger an unbounded fan-out.
+function intent_to_groups(?array $intent): array {
+    if (!$intent) return [];
+    $count      = max(1, min(10, (int) ($intent['count'] ?? NEAREST_DEFAULT)));
+    $candidates = is_array($intent['candidates'] ?? null)
+        ? array_slice($intent['candidates'], 0, 3)
+        : [];
+
+    $groups = [];
+    foreach ($candidates as $candidate) {
+        if (!is_array($candidate)) continue;
+        $location = null;
+        if (!empty($candidate['zip'])) $location = geocode_place((string) $candidate['zip']);
+        // If the ZIP geocode returned nothing (or there was no ZIP), fall through
+        // to the place name so the candidate still has a chance to resolve.
+        if ($location === null && !empty($candidate['place'])) {
+            $location = geocode_place((string) $candidate['place']);
+        }
+        if ($location === null) continue;
+        $stations = nearest_metar_stations($location['lat'], $location['lon'], $count);
+        if (!$stations) continue;
+        $groups[] = [
+            'interpreted' => 'Nearest METAR to ' . $location['label'],
+            'stations'    => $stations,
+        ];
+    }
+    return $groups;
+}
+
+// Cheap heuristic for "this query might be a famously-ambiguous place name
+// even though Tier-1 happened to resolve it to one Nominatim result". Used
+// by the escalation logic to opportunistically probe Tier-2 for richer
+// multi-group answers. Conservative — bails out for ZIPs (always unambiguous)
+// and longer queries (usually carry disambiguating context).
+function is_likely_ambiguous(string $q): bool {
+    // Explicit US ZIP → unambiguous by construction.
+    if (preg_match('/\b\d{5}\b/', $q)) return false;
+    // Strip filler + connectives so "airports near Springfield" counts as
+    // one word ("Springfield"), not three.
+    $stripped = preg_replace(
+        '/\b('
+        . 'nearest|closest|near|both|either|or|and|'
+        . 'airports?|airfields?|airforce|airbase|bases?|field|'
+        . 'metars?|tafs?|stations?|reporting|weather|'
+        . 'to|the|for|me|in|at|of'
+        . ')\b/i',
+        ' ',
+        $q
+    );
+    $stripped = trim(preg_replace('/\s+/', ' ', $stripped));
+    if ($stripped === '') return false;
+    $wordCount = count(explode(' ', $stripped));
+    // 1–3 meaningful words covers the famously-ambiguous bucket
+    // (Springfield / King County / Portland / Boring / WA / Salem / Vienna ...).
+    // 4+ words usually carry explicit disambiguating context.
+    return $wordCount >= 1 && $wordCount <= 3;
+}
 
 // --- Tier 1: deterministic intent ---------------------------------------------
 // Strip filler, detect a 5-digit ZIP, else treat the remainder as a place name.
@@ -84,77 +402,6 @@ function deterministic_intent(string $q): array {
     return [
         'candidates' => [['zip' => '', 'place' => $place !== '' ? $place : $q]],
         'count'      => NEAREST_DEFAULT,
-    ];
-}
-
-// --- Tier 2: Gemini intent extraction (free tier) -----------------------------
-// Returns null (→ Tier 1) when no key, error, or unparseable. NEVER returns a
-// station — only the location to feed the grounded pipeline.
-function gemini_intent(string $q): ?array {
-    $key = server_secret('GEMINI_API_KEY');
-    if (!$key) return null;
-
-    $prompt = 'You extract LOCATION candidates from an aviation-weather query. '
-        . 'Station identifiers come from a separate live feed — never from you.'
-        . "\n\n"
-        . 'Return ONLY JSON matching {"candidates":[{"zip":"","place":""}],"count":6}.'
-        . "\n"
-        . '- "zip": 5-digit US ZIP or "".' . "\n"
-        . '- "place": a city/county/region. Always include the state OR country '
-        . 'when more than one place shares the name. Use postal-style: '
-        . '"King County, WA" not "King County, Washington".' . "\n"
-        . '- "count": stations per candidate (default 6).' . "\n\n"
-        . 'When the query could refer to multiple real places worldwide, return '
-        . '2-3 candidates covering the most plausible. List the strongest first. '
-        . 'Otherwise return a single candidate.'
-        . "\n\n"
-        . 'Examples:' . "\n"
-        . '- "King County" → [{"place":"King County, WA"},{"place":"King County, TX"}]' . "\n"
-        . '- "WA" → [{"place":"Washington, USA"},{"place":"Western Australia, AU"}]' . "\n"
-        . '- "Springfield" → [{"place":"Springfield, IL"},{"place":"Springfield, MO"},{"place":"Springfield, MA"}]' . "\n"
-        . '- "Boring" → [{"place":"Boring, OR"},{"place":"Boring, MD"}]' . "\n"
-        . '- "Ilwaco" → [{"place":"Ilwaco, WA"}]' . "\n"
-        . '- "98624" → [{"zip":"98624","place":""}]' . "\n"
-        . '- "where can I land near Spokane" → [{"place":"Spokane, WA"}]' . "\n\n"
-        . 'Do NOT name any airport or station. Query: ' . $q;
-
-    $payload = [
-        'contents'         => [['parts' => [['text' => $prompt]]]],
-        'generationConfig' => ['responseMimeType' => 'application/json', 'temperature' => 0],
-    ];
-    // Free-tier model. Google rotates which models are on the free tier (e.g.
-    // gemini-2.0-flash had its free quota set to 0 in May 2026; gemini-2.5-flash
-    // is the current free-tier default). Re-verify on key setup if Tier 2 stops
-    // firing — a 429 with `limit: 0` here usually means the model has rotated.
-    $url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
-
-    // Pass the key in the x-goog-api-key header (Google's preferred method) rather
-    // than a ?key= URL param, so it never lands in server/proxy access logs.
-    $resp = http_post_json($url, $payload, ['x-goog-api-key: ' . $key]);
-    $text = $resp['candidates'][0]['content']['parts'][0]['text'] ?? null;
-    if (!$text) return null;
-
-    $intent = json_decode($text, true);
-    if (!is_array($intent)) return null;
-
-    // Clean each candidate: keep only ones with a usable ZIP or place. Trim
-    // whitespace and validate the ZIP format. Drop empties so the caller can
-    // fall back to Tier-1 when Gemini returns nothing actionable.
-    $raw = is_array($intent['candidates'] ?? null) ? $intent['candidates'] : [];
-    $candidates = [];
-    foreach ($raw as $c) {
-        if (!is_array($c)) continue;
-        $zip = (string) ($c['zip'] ?? '');
-        $zip = preg_match('/^\d{5}$/', $zip) ? $zip : '';
-        $place = is_string($c['place'] ?? null) ? trim($c['place']) : '';
-        if ($zip === '' && $place === '') continue;
-        $candidates[] = ['zip' => $zip, 'place' => $place];
-    }
-    if (empty($candidates)) return null;
-
-    return [
-        'candidates' => $candidates,
-        'count'      => (int) ($intent['count'] ?? NEAREST_DEFAULT),
     ];
 }
 
