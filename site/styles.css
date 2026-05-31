@@ -1096,6 +1096,24 @@ footer p { margin: 0; }
 }
 
 .tile.dragging { opacity: 0.4; }
+
+/* Touch-based drag (iOS Safari / Brave on iOS). Native HTML5 drop events are
+ * unreliable on touch, so we drive the reorder via raw touch events. While
+ * a tile is being touch-dragged it follows the finger via inline `transform`
+ * and floats above the rest. Other tiles get a short transform-transition so
+ * they slide smoothly into the gap that would open if the user released
+ * here. The dragged tile is excluded from the transition — its position
+ * tracks the finger 1:1, no easing. */
+.tile.touch-dragging {
+  opacity: 0.92;
+  z-index: 50;
+  position: relative;
+  cursor: grabbing;
+  transition: none !important;
+}
+.tile:not(.touch-dragging) {
+  transition: transform 0.18s ease;
+}
 /* Drop indicators — expanded mode stacks tiles as rows, so the bar sits on
    the top/bottom edge of the target. Collapsed mode flows chips horizontally,
    so we override to a vertical bar on the left/right edge of the target. */

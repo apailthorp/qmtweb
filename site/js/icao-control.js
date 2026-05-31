@@ -1376,6 +1376,246 @@ export function initIcaoControl({
     clearDropMarkers();
   });
 
+  // --- Touch-based reorder ---
+  //
+  // iOS Safari (and Brave on iOS, which is WebKit underneath) fires dragstart
+  // and dragover from a long-press on draggable elements, but the `drop` event
+  // is unreliable — especially in collapsed mode where the chip targets are
+  // small. Result: the user sees the tile pick up + the drop indicator, but
+  // releasing never commits the reorder.
+  //
+  // This handler implements the same reorder logic using raw touch events
+  // (independent of HTML5 drag-and-drop) so the gesture works on every
+  // touch device. It also adds live mid-drag visual feedback — the dragged
+  // tile follows the finger, and the surrounding tiles shift via transforms
+  // to show where the drop will land — so the user can see the rearrangement
+  // forming before they release. On commit, the existing FLIP animation in
+  // flipTiles() handles the final snap into place.
+  let touchDrag = null;
+  const TOUCH_DRAG_THRESHOLD_PX = 8;
+
+  function touchDragSnapshotRects() {
+    const rects = new Map();
+    for (const t of tiles.children) {
+      rects.set(t.dataset.icao, t.getBoundingClientRect());
+    }
+    return rects;
+  }
+
+  // Find the would-be drop target using the ORIGINAL (pre-shift) rects
+  // snapshotted at drag start. Critical for stability: during drag, the
+  // shift transforms reposition tiles visually, so elementFromPoint +
+  // getBoundingClientRect both return moving positions — that creates a
+  // feedback loop where the shift changes what's under the cursor, which
+  // changes the target, which changes the shift, producing rapid rattle.
+  // Original-rect targeting decouples drop detection from shift state.
+  function findTouchTarget(touch) {
+    if (!touchDrag || !touchDrag.rects) return null;
+    for (const [icao, rect] of touchDrag.rects) {
+      if (icao === touchDrag.icao) continue;
+      if (touch.clientX >= rect.left && touch.clientX <= rect.right &&
+          touch.clientY >= rect.top && touch.clientY <= rect.bottom) {
+        const el = tiles.querySelector(`.tile[data-icao="${icao}"]`);
+        if (el) return { el, rect };
+      }
+    }
+    return null;
+  }
+
+  // Before/after decision with hysteresis. Pure midpoint comparison flips on
+  // sub-pixel finger jitter when the cursor is right on the boundary — the
+  // shift arrangement differs for before vs after, so each flip recomputes
+  // and visually rattles. The 10% margin around the midpoint keeps the
+  // previous decision until the cursor decisively crosses to the other side.
+  function isDropBeforeStable(rect, touch, lastBefore) {
+    const axis  = isOpen() ? "y" : "x";
+    const start = axis === "y" ? rect.top : rect.left;
+    const size  = axis === "y" ? rect.height : rect.width;
+    const pos   = axis === "y" ? touch.clientY : touch.clientX;
+    const mid   = start + size / 2;
+    const buffer = size * 0.10;
+    if (lastBefore === true)  return pos > mid + buffer ? false : true;
+    if (lastBefore === false) return pos < mid - buffer ? true  : false;
+    return pos < mid;
+  }
+
+  // Compute the "would-be" index based on the current touch point, then
+  // apply transforms to every non-dragged tile so it visibly slides to the
+  // slot it would occupy if the user released here. Idempotent — called on
+  // every touchmove with the latest target.
+  function touchDragApplyShifts(targetRow, dropBefore) {
+    if (!touchDrag) return;
+    const fromIdx = list.indexOf(touchDrag.icao);
+    let wouldBeIdx = fromIdx;
+    if (targetRow && targetRow.dataset.icao !== touchDrag.icao) {
+      const targetIdx = list.indexOf(targetRow.dataset.icao);
+      wouldBeIdx = dropBefore ? targetIdx : targetIdx + 1;
+      if (fromIdx < wouldBeIdx) wouldBeIdx -= 1;
+    }
+    const wouldBe = [...list];
+    wouldBe.splice(fromIdx, 1);
+    wouldBe.splice(wouldBeIdx, 0, touchDrag.icao);
+
+    const originalChildren = Array.from(tiles.children);
+    for (const el of originalChildren) {
+      if (el === touchDrag.tile) continue;
+      const wouldBeIdxForEl = wouldBe.indexOf(el.dataset.icao);
+      const occupant = originalChildren[wouldBeIdxForEl];
+      if (!occupant || occupant === el) {
+        el.style.transform = "";
+        continue;
+      }
+      const from = touchDrag.rects.get(el.dataset.icao);
+      const to = touchDrag.rects.get(occupant.dataset.icao);
+      if (!from || !to) { el.style.transform = ""; continue; }
+      el.style.transform = `translate(${to.left - from.left}px, ${to.top - from.top}px)`;
+    }
+  }
+
+  function touchDragClearShifts() {
+    for (const el of tiles.children) {
+      if (el === touchDrag?.tile) continue;
+      el.style.transform = "";
+    }
+  }
+
+  tiles.addEventListener("touchstart", (e) => {
+    // Defensive: if a previous drag's touchend/touchcancel was dropped by
+    // iOS (rare, but DOM mutation during touch handling can do this), force-
+    // clean before starting a new drag. Without this the `if (touchDrag)
+    // return` below would silently swallow every subsequent drag attempt.
+    if (touchDrag) {
+      touchDrag.tile.classList.remove("touch-dragging");
+      touchDrag.tile.style.transform = "";
+      touchDragClearShifts();
+      clearDropMarkers();
+      touchDrag = null;
+    }
+    if (isTileReservedArea(e.target)) return; // controls intercept their own taps
+    const tile = e.target.closest(".tile");
+    if (!tile) return;
+    const t = e.touches[0];
+    touchDrag = {
+      icao: tile.dataset.icao,
+      tile,
+      startX: t.clientX,
+      startY: t.clientY,
+      active: false,
+      rects: null,
+      lastBefore: null,   // hysteresis state — last before/after decision
+    };
+  }, { passive: true });
+
+  tiles.addEventListener("touchmove", (e) => {
+    if (!touchDrag) return;
+    const t = e.touches[0];
+    const dx = t.clientX - touchDrag.startX;
+    const dy = t.clientY - touchDrag.startY;
+
+    // Promote tap → drag once the user moves past the threshold. Before that
+    // we let the page scroll / the long-press tooltip timer run normally.
+    if (!touchDrag.active) {
+      if (Math.hypot(dx, dy) < TOUCH_DRAG_THRESHOLD_PX) return;
+      touchDrag.active = true;
+      // Cancel any in-flight tooltip — the gesture is now a drag.
+      cancelLongPress();
+      if (touchTooltipShown) { hideResultTooltip(); touchTooltipShown = false; }
+      // Snapshot rects BEFORE we start shifting anything — these are the
+      // baseline positions every transform measures from.
+      touchDrag.rects = touchDragSnapshotRects();
+      touchDrag.tile.classList.add("touch-dragging");
+    }
+
+    // Move the dragged tile to follow the finger.
+    touchDrag.tile.style.transform = `translate(${dx}px, ${dy}px)`;
+
+    // Identify the drop target from the original (pre-shift) rects, not
+    // from elementFromPoint/getBoundingClientRect — those reflect the
+    // shifted layout and would feed back into the shift recompute.
+    const target = findTouchTarget(t);
+    clearDropMarkers();
+    if (target) {
+      const before = isDropBeforeStable(target.rect, t, touchDrag.lastBefore);
+      touchDrag.lastBefore = before;
+      target.el.classList.add(before ? "drop-before" : "drop-after");
+      touchDragApplyShifts(target.el, before);
+    } else {
+      touchDrag.lastBefore = null;
+      touchDragClearShifts();
+    }
+
+    e.preventDefault(); // prevent page scroll while dragging
+  });
+
+  function touchDragFinish(commitDrop, point) {
+    if (!touchDrag) return;
+    const tile = touchDrag.tile;
+    const icao = touchDrag.icao;
+    const lastBefore = touchDrag.lastBefore;
+
+    // 1. Resolve the drop target from the LAST stable target identified
+    //    during touchmove (uses original rects + hysteresis), not from a
+    //    fresh elementFromPoint at release. Avoids a last-frame target
+    //    swap if the user lifts their finger mid-jitter.
+    let dropInfo = null;
+    if (commitDrop && point) {
+      const target = findTouchTarget(point);
+      if (target) {
+        const before = lastBefore !== null
+          ? lastBefore
+          : isDropBeforeStable(target.rect, point, null);
+        dropInfo = {
+          targetIdx: list.indexOf(target.el.dataset.icao),
+          fromIdx:   list.indexOf(icao),
+          before,
+        };
+      }
+    }
+
+    // 2. Clear the dragged tile's transform AND remove .touch-dragging in
+    //    that order — while the class is still applied its `transition:
+    //    none !important` rule kicks in, so the transform-clear is instant.
+    //    Removing the class afterwards has nothing to animate (transform
+    //    is already "").
+    tile.style.transform = "";
+    tile.classList.remove("touch-dragging");
+    clearDropMarkers();
+
+    // 3. iOS Safari/Brave fires HTML5 dragstart in parallel with our touch
+    //    handlers on a long-press of a draggable element, leaving `dragIcao`
+    //    set + a `.dragging` class on the source. The HTML5 dragend may
+    //    not fire cleanly when commit() rebuilds the DOM, so we clean both
+    //    up explicitly here. Without this, a second drag could be blocked
+    //    by stale state and the dragover handler would keep firing for
+    //    no reason.
+    dragIcao = null;
+    for (const r of tiles.querySelectorAll(".dragging")) r.classList.remove("dragging");
+
+    // 4. On a successful drop, LEAVE the sibling transforms in place —
+    //    commit() will rebuild the DOM with fresh elements at their final
+    //    positions, and the old transformed elements are replaced in the
+    //    same paint. If the user released off-target, clear the shifts so
+    //    siblings smoothly slide back to their original spots via the CSS
+    //    transition on `.tile:not(.touch-dragging)`.
+    if (dropInfo) {
+      let newIdx = dropInfo.before ? dropInfo.targetIdx : dropInfo.targetIdx + 1;
+      if (dropInfo.fromIdx < newIdx) newIdx -= 1;
+      if (moveTo(icao, newIdx)) commit();
+    } else {
+      touchDragClearShifts();
+    }
+
+    touchDrag = null;
+  }
+
+  tiles.addEventListener("touchend", (e) => {
+    if (!touchDrag) return;
+    const wasActive = touchDrag.active;
+    touchDragFinish(wasActive, wasActive ? e.changedTouches[0] : null);
+    if (wasActive) e.preventDefault(); // suppress synthetic click after drag
+  });
+  tiles.addEventListener("touchcancel", () => touchDragFinish(false, null));
+
   // --- Action buttons ---
 
   actionsEl?.addEventListener("click", (e) => {
