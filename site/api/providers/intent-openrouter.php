@@ -23,8 +23,8 @@ function openrouter_intent(string $q): ?array {
     $key = server_secret('OPENROUTER_API_KEY');
     if (!$key) { openrouter_status('off'); return null; }
 
-    $cacheKey = gemini_intent_cache_key($q);
-    $cached = cache_get($cacheKey, GEMINI_INTENT_TTL);
+    $cacheKey = intent_cache_key($q);
+    $cached = cache_get($cacheKey, INTENT_CACHE_TTL);
     if (is_array($cached) && !empty($cached['candidates'])) {
         openrouter_status('live');
         return $cached;

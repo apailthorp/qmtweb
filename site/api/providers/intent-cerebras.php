@@ -22,20 +22,24 @@ function cerebras_intent(string $q): ?array {
     $key = server_secret('CEREBRAS_API_KEY');
     if (!$key) { cerebras_status('off'); return null; }
 
-    // Shared intent cache — provider-agnostic. A Springfield hit cached by
-    // Gemini serves Cerebras callers too; everyone returns the same intent
-    // shape so the cache is a free upgrade across the chain.
-    $cacheKey = gemini_intent_cache_key($q);
-    $cached = cache_get($cacheKey, GEMINI_INTENT_TTL);
+    // Shared intent cache — provider-agnostic (helpers live in _lib.php).
+    // A Springfield hit cached by Gemini serves Cerebras callers too; everyone
+    // returns the same intent shape so the cache is a free upgrade across the
+    // chain.
+    $cacheKey = intent_cache_key($q);
+    $cached = cache_get($cacheKey, INTENT_CACHE_TTL);
     if (is_array($cached) && !empty($cached['candidates'])) {
         cerebras_status('live');
         return $cached;
     }
 
-    // Free-tier model. Override via CEREBRAS_MODEL secret. llama3.1-8b is
-    // small + fast + handles the JSON-mode intent extraction reliably.
-    $model = trim((string) (server_secret('CEREBRAS_MODEL') ?? 'llama3.1-8b'));
-    if ($model === '') $model = 'llama3.1-8b';
+    // Free-tier model. Override via CEREBRAS_MODEL secret. Cerebras's free
+    // roster rotates aggressively — re-verify against the live /v1/models
+    // endpoint if calls start 404ing on the model name (see README provider
+    // table for current default). gpt-oss-120b is the current verified
+    // free-tier model with reliable JSON-mode support.
+    $model = trim((string) (server_secret('CEREBRAS_MODEL') ?? 'gpt-oss-120b'));
+    if ($model === '') $model = 'gpt-oss-120b';
 
     $status = 0; $errBody = null;
     $result = intent_call_openai_compatible(

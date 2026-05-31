@@ -89,7 +89,7 @@ $tier1GroupCount = count($groups);
 
 // Tier-2 cache upgrade — preferred over Tier-1 when richer (multi-group).
 $cacheHit = false;
-$cachedTier2 = gemini_intent_cached_only($q);
+$cachedTier2 = intent_cached_only($q);
 if ($cachedTier2) {
     $cachedGroups = intent_to_groups($cachedTier2);
     if (count($cachedGroups) > count($groups)) {

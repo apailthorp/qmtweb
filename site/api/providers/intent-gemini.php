@@ -32,8 +32,8 @@ function gemini_intent(string $q): ?array {
     $key = server_secret('GEMINI_API_KEY');
     if (!$key) { gemini_status('off'); return null; }
 
-    $cacheKey = gemini_intent_cache_key($q);
-    $cached = cache_get($cacheKey, GEMINI_INTENT_TTL);
+    $cacheKey = intent_cache_key($q);
+    $cached = cache_get($cacheKey, INTENT_CACHE_TTL);
     if (is_array($cached) && !empty($cached['candidates'])) {
         gemini_status('live');
         return $cached;
@@ -148,25 +148,3 @@ function parse_gemini_429_detail(?array $errBody): array {
     return $detail;
 }
 
-// Stable cache key for a freeform query. Normalised so casing + whitespace
-// variants collide on the same slot. Prefixed so qmtweb-cache entries from
-// other endpoints (Nominatim "geo:…") never alias intent entries.
-function gemini_intent_cache_key(string $q): string {
-    return 'intent:' . strtolower(trim($q));
-}
-
-// Cache-only lookup. Used by the smart-conditional Tier-2 path: if we've
-// served this query before with a richer multi-group intent, we want to
-// prefer that over Tier-1's single guess — but WITHOUT spending a fresh
-// Gemini call. Returns null on miss (no live escalation here; the caller
-// can fall through to gemini_intent() when it wants the live path).
-function gemini_intent_cached_only(string $q): ?array {
-    $cached = cache_get(gemini_intent_cache_key($q), GEMINI_INTENT_TTL);
-    return is_array($cached) && !empty($cached['candidates']) ? $cached : null;
-}
-
-// LLM intent cache lifetime. 7 days is the sweet spot: long enough that a
-// frequently-searched ambiguous place (e.g. "Springfield") survives across
-// quota rollovers; short enough that Gemini's interpretation of "King County"
-// can shift if the underlying training data updates.
-const GEMINI_INTENT_TTL = 7 * 86400;

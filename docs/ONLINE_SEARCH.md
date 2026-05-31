@@ -99,7 +99,7 @@ return [
   'OPENROUTER_API_KEY' => '…',
   // 'OPENROUTER_MODEL' => 'meta-llama/llama-3.2-3b-instruct:free',
   'CEREBRAS_API_KEY'   => '…',
-  // 'CEREBRAS_MODEL'  => 'llama3.1-8b',
+  // 'CEREBRAS_MODEL'  => 'gpt-oss-120b', // free roster rotates — verify with /v1/models
   'GROQ_API_KEY'       => '…',  // NOT Grok / X.ai — Groq is the Sunnyvale chip company
   // 'GROQ_MODEL'      => 'llama-3.1-8b-instant',
   'AVIATIONSTACK_KEY'  => 'optional-and-currently-unused',

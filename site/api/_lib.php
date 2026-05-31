@@ -255,6 +255,29 @@ function intent_call_openai_compatible(string $q, array $config, ?int &$statusOu
     return normalize_intent($parsed);
 }
 
+// --- Provider-agnostic intent cache -------------------------------------------
+// All providers produce the same normalised intent shape, so the cache is
+// keyed only on the query — one provider's "Springfield" result serves any
+// other provider's call for the same query. Lives here (not in any adapter)
+// so adapters don't have load-order dependencies on each other.
+
+const INTENT_CACHE_TTL = 7 * 86400; // 7-day TTL; tuneable here
+
+// Stable cache key for a freeform query. Normalised so casing + whitespace
+// variants collide on the same slot. Prefixed so qmtweb-cache entries from
+// other endpoints (Nominatim "geo:…") never alias intent entries.
+function intent_cache_key(string $q): string {
+    return 'intent:' . strtolower(trim($q));
+}
+
+// Cache-only lookup. Used by resolve.php's smart-conditional Tier-2 path: if
+// we've served this query before with a richer multi-group intent, prefer it
+// over Tier-1 — but WITHOUT spending a fresh provider call.
+function intent_cached_only(string $q): ?array {
+    $cached = cache_get(intent_cache_key($q), INTENT_CACHE_TTL);
+    return is_array($cached) && !empty($cached['candidates']) ? $cached : null;
+}
+
 // --- Sticky Tier-2 state ------------------------------------------------------
 // The orchestrator uses a "sticky current provider" model: stay on whoever
 // last worked, only roll forward on 429. State persists across requests in a

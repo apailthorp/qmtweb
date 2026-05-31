@@ -82,7 +82,7 @@ on whichever provider last worked and rolls forward only on 429 / error.
 |---|---|---|---|
 | [Google Gemini](https://ai.google.dev/) | [`providers/intent-gemini.php`](site/api/providers/intent-gemini.php) | ~20 req/day, ~20 req/min on `gemini-2.5-flash` | Yes (footer) |
 | [OpenRouter](https://openrouter.ai/) | [`providers/intent-openrouter.php`](site/api/providers/intent-openrouter.php) | Per-model RPM/RPD on `:free` SKUs (rotating roster) | Yes (footer) |
-| [Cerebras](https://www.cerebras.ai/) | [`providers/intent-cerebras.php`](site/api/providers/intent-cerebras.php) | ~30 RPM / ~14k RPD on `llama3.1-8b` | Yes (footer) |
+| [Cerebras](https://www.cerebras.ai/) | [`providers/intent-cerebras.php`](site/api/providers/intent-cerebras.php) | ~30 RPM / ~14k RPD on `gpt-oss-120b` (free roster rotates) | Yes (footer) |
 | [Groq](https://groq.com/) | [`providers/intent-groq.php`](site/api/providers/intent-groq.php) | ~30 RPM / ~14k RPD on `llama-3.1-8b-instant` | Yes (footer) |
 
 The footer credits **whichever provider served the most recent Online ↗ call**
