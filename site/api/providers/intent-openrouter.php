@@ -19,6 +19,11 @@ const OPENROUTER_ATTRIBUTION = [
     'url'  => 'https://openrouter.ai/',
 ];
 
+// Default model when OPENROUTER_MODEL isn't set / is empty. OpenRouter's
+// free roster rotates frequently; verify-providers catches drift before
+// release.
+const OPENROUTER_DEFAULT_MODEL = 'meta-llama/llama-3.2-3b-instruct:free';
+
 function openrouter_intent(string $q): ?array {
     $key = server_secret('OPENROUTER_API_KEY');
     if (!$key) { openrouter_status('off'); return null; }
@@ -31,11 +36,9 @@ function openrouter_intent(string $q): ?array {
     }
 
     // OpenRouter free roster rotates frequently; verify availability via
-    // https://openrouter.ai/models?max_price=0. Default targets a stable
-    // free model with native JSON support.
-    $model = trim((string) (server_secret('OPENROUTER_MODEL')
-        ?? 'meta-llama/llama-3.2-3b-instruct:free'));
-    if ($model === '') $model = 'meta-llama/llama-3.2-3b-instruct:free';
+    // `npm run verify:providers`. Default value lives in
+    // OPENROUTER_DEFAULT_MODEL.
+    $model = openrouter_model();
 
     $status = 0; $errBody = null;
     $result = intent_call_openai_compatible(
@@ -65,6 +68,13 @@ function openrouter_intent(string $q): ?array {
     cache_set($cacheKey, $result);
     openrouter_status('live');
     return $result;
+}
+
+// Public read of the currently-configured OpenRouter model. Used by health.php
+// AND openrouter_intent() so the advertised value matches the live call.
+function openrouter_model(): string {
+    $model = trim((string) (server_secret('OPENROUTER_MODEL') ?? OPENROUTER_DEFAULT_MODEL));
+    return $model === '' ? OPENROUTER_DEFAULT_MODEL : $model;
 }
 
 function openrouter_status(?string $newValue = null): string {
