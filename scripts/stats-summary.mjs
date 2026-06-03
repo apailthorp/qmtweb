@@ -80,7 +80,11 @@ const latencies = records
 
 function percentile(sorted, p) {
   if (!sorted.length) return null;
-  const idx = Math.min(sorted.length - 1, Math.floor(sorted.length * p));
+  // p × len rounded UP then -1 maps a fractional percentile to the matching
+  // zero-based index. p95 with 100 samples → ceil(95) - 1 = 94, the 95th
+  // value. Floor of len × p would yield 95 (the 96th value) when len × p
+  // lands on an integer, shifting the percentile by one.
+  const idx = Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * p) - 1));
   return sorted[idx];
 }
 

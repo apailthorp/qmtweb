@@ -92,7 +92,13 @@ for (const p of providers) {
     continue;
   }
   try {
-    const res = await fetch(p.url, { headers: p.headers(key) });
+    // 8s ceiling — providers should answer /v1/models in well under a second;
+    // anything past 8s is a hang and we'd rather fail fast than block a
+    // release check on a stalled endpoint.
+    const res = await fetch(p.url, {
+      headers: p.headers(key),
+      signal: AbortSignal.timeout(8_000),
+    });
     if (!res.ok) {
       console.log(`  ${label} HTTP ${res.status} — couldn't list models`);
       drift++;

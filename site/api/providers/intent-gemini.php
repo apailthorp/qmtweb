@@ -24,6 +24,10 @@ const GEMINI_ATTRIBUTION = [
     'url'  => 'https://ai.google.dev/',
 ];
 
+// Default model when GEMINI_MODEL isn't set / is empty. Defined once here
+// so gemini_intent() and gemini_model() can't drift apart on the fallback.
+const GEMINI_DEFAULT_MODEL = 'gemini-2.5-flash';
+
 // Returns null (→ next provider in the chain) when no key, error, or
 // unparseable. NEVER returns a station — only the location to feed the
 // grounded pipeline. Sets gemini_status() / gemini_detail() side-effects
@@ -46,8 +50,7 @@ function gemini_intent(string $q): ?array {
     // GEMINI_MODEL override: swap models without a code deploy. Falls back to
     // the hard-coded default when unset. Whitespace trimmed so a stray newline
     // in the secrets file doesn't produce a 404 from the model endpoint.
-    $model = trim((string) (server_secret('GEMINI_MODEL') ?? 'gemini-2.5-flash'));
-    if ($model === '') $model = 'gemini-2.5-flash';
+    $model = gemini_model();
     $url = 'https://generativelanguage.googleapis.com/v1beta/models/'
         . rawurlencode($model) . ':generateContent';
 
@@ -76,11 +79,12 @@ function gemini_intent(string $q): ?array {
 }
 
 // Public read of the currently-configured Gemini model. Used by /api/health.php
-// to surface the active value in the UI without re-implementing the resolution
-// logic. Mirrors the trim + fallback applied inside gemini_intent().
+// AND gemini_intent() so the value advertised in the health endpoint matches
+// the one the next live call will send. Single source of truth for the
+// default lives in GEMINI_DEFAULT_MODEL above.
 function gemini_model(): string {
-    $model = trim((string) (server_secret('GEMINI_MODEL') ?? 'gemini-2.5-flash'));
-    return $model === '' ? 'gemini-2.5-flash' : $model;
+    $model = trim((string) (server_secret('GEMINI_MODEL') ?? GEMINI_DEFAULT_MODEL));
+    return $model === '' ? GEMINI_DEFAULT_MODEL : $model;
 }
 
 // Tier-2 outcome from the most recent gemini_intent() call. The orchestrator

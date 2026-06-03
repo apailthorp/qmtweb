@@ -91,6 +91,11 @@ export async function initTier2Health() {
       if (typeof p.model === "string" && p.model) {
         const modelTitle = `${brand} (${p.model})`;
         a.title = modelTitle;
+        // Mirror to aria-label so screen-reader / touch users get the model
+        // name — title-attribute tooltips only surface on hover and don't
+        // announce. Both attributes update together (and revert together
+        // after a Tier-2 fallback temporarily overrides them).
+        a.setAttribute("aria-label", modelTitle);
         // Stash for restoration after a Tier-2 fallback temporarily replaces
         // the title with a rich error message — markTier2Attribution reads
         // this on clear so the model tooltip survives across search cycles.
@@ -161,8 +166,10 @@ function markTier2Attribution(state, detail, provider) {
     a.classList.remove("is-fallback");
     if (a.dataset.modelTitle) {
       a.title = a.dataset.modelTitle;
+      a.setAttribute("aria-label", a.dataset.modelTitle);
     } else {
       a.removeAttribute("title");
+      a.removeAttribute("aria-label");
     }
   });
   if (tier2CountdownTimer) {
@@ -222,6 +229,9 @@ function markTier2Attribution(state, detail, provider) {
     }
   }
   link.title = summary;
+  // Keep aria-label in sync so screen-reader users hear the throttle detail
+  // — model title is restored on the next successful Tier-2 call.
+  link.setAttribute("aria-label", summary);
 
   // Insert the chip immediately after the throttled link so the visual
   // pairing reads "Gemini *busy 30s* · OpenRouter · Cerebras …" — chip
@@ -927,6 +937,11 @@ export function initIcaoControl({
     a.href = url;
     a.target = "_blank";
     a.rel = "noopener";
+    // Explicit accessible name — the visible text alone doesn't communicate
+    // that activating the link opens a map in a new tab. Screen-reader users
+    // get the destination announced; sighted users get the same hint via
+    // title-on-hover.
+    a.setAttribute("aria-label", `${text} — open map in new tab`);
     if (tip) a.title = tip;
     return a;
   }

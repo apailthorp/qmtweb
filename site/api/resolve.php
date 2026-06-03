@@ -92,16 +92,30 @@ if ($q === '') json_err('Type a place, ZIP, or airport to search online.', 422);
 // the cache.
 $tafOnly = (bool) preg_match('/\btafs?\b/i', $q);
 
-// Tier-1 first — saves the bulk of LLM quota.
+// Normalised form for Tier-2 cache lookups + LLM prompts: same query
+// MINUS the TAF token (which controls station filtering, not location).
+// "King County" and "King County TAF" thus share one cache entry and one
+// Gemini call — only the bbox endpoint switches downstream. deterministic_intent
+// still runs on the raw $q because its own filler-strip already covers TAF.
+$qNormalized = normalize_intent_query($q);
+
+// Tier-1 first — saves the bulk of LLM quota. Track $geocodedAny across all
+// three intent_to_groups call sites below so the empty-result error path can
+// distinguish "location resolved but no nearby stations" from "couldn't work
+// out a location at all". The latter wants ZIP / city advice; the former
+// wants "no <METAR/TAF> stations near <place>".
+$geocodedAny = false;
 $tier1Intent = deterministic_intent($q);
-$groups = intent_to_groups($tier1Intent, $tafOnly);
+$groups = intent_to_groups($tier1Intent, $tafOnly, $geocodedAny);
 $tier1GroupCount = count($groups);
 
 // Tier-2 cache upgrade — preferred over Tier-1 when richer (multi-group).
 $cacheHit = false;
-$cachedTier2 = intent_cached_only($q);
+$cachedTier2 = intent_cached_only($qNormalized);
 if ($cachedTier2) {
-    $cachedGroups = intent_to_groups($cachedTier2, $tafOnly);
+    $cachedGeocoded = false;
+    $cachedGroups = intent_to_groups($cachedTier2, $tafOnly, $cachedGeocoded);
+    $geocodedAny = $geocodedAny || $cachedGeocoded;
     if (count($cachedGroups) > count($groups)) {
         $groups = $cachedGroups;
         $cacheHit = true;
@@ -122,11 +136,13 @@ if ($cachedTier2) {
 $tier2Used   = null;
 $tier2Status = null;
 $tier2Detail = null;
-$shouldEscalate = empty($groups) || (count($groups) === 1 && !$cacheHit && is_likely_ambiguous($q));
+$shouldEscalate = empty($groups) || (count($groups) === 1 && !$cacheHit && is_likely_ambiguous($qNormalized));
 if ($shouldEscalate) {
-    $orchestration = run_tier2_chain($q);
+    $orchestration = run_tier2_chain($qNormalized);
     if ($orchestration['intent']) {
-        $tier2Groups = intent_to_groups($orchestration['intent'], $tafOnly);
+        $tier2Geocoded = false;
+        $tier2Groups = intent_to_groups($orchestration['intent'], $tafOnly, $tier2Geocoded);
+        $geocodedAny = $geocodedAny || $tier2Geocoded;
         // Adopt Tier-2 if it strictly improves on Tier-1.
         if (count($tier2Groups) > count($groups)) {
             $groups = $tier2Groups;
@@ -169,9 +185,20 @@ if (!$groups) {
     // 429 detail when applicable. Without this the user sees "couldn't work
     // out a location" with no hint that Tier-2 is throttled and they're stuck
     // on Tier-1-only resolution.
-    $errResp = [
-        'error' => "Couldn't work out a location from \"$q\". Try a city or 5-digit ZIP.",
-    ];
+    //
+    // Two distinct failure modes — picking the right message changes what the
+    // user does next:
+    //   geocodedAny=false  →  intent / location couldn't be worked out at
+    //                          all; ZIP / city advice is the help they need.
+    //   geocodedAny=true   →  location resolved but no nearby stations of the
+    //                          requested product. Common for `<place> TAF`
+    //                          searches in TAF-sparse regions; the user can
+    //                          drop the TAF filter or try a nearby major city.
+    $product = $tafOnly ? 'TAF' : 'METAR';
+    $errMsg = $geocodedAny
+        ? "Found a location for \"$q\" but no nearby $product stations."
+        : "Couldn't work out a location from \"$q\". Try a city or 5-digit ZIP.";
+    $errResp = ['error' => $errMsg];
     if ($tier2Status === 'throttled' || $tier2Status === 'error') {
         $errResp['tier2']             = 'fallback';
         $errResp['tier2_provider']    = $tier2Used;
@@ -332,7 +359,15 @@ function provider_attribution(string $name): array {
 // METAR — narrows results to stations that publish forecast TAFs (a subset of
 // METAR-reporting stations). The group label also flips from "Nearest METAR
 // to …" to "Nearest TAF to …" so the user can see the narrowed search applied.
-function intent_to_groups(?array $intent, bool $tafOnly = false): array {
+//
+// $geocodedAny: by-ref out param. Set to true when AT LEAST ONE candidate
+// resolved to a location, regardless of whether nearby stations were found.
+// Lets the caller distinguish "we couldn't work out a location" from "we
+// found the location but no nearby <product> stations" — different errors
+// from the user's point of view (the latter is common with $tafOnly=true
+// since TAF-publishing stations are a small subset of METAR ones).
+function intent_to_groups(?array $intent, bool $tafOnly = false, bool &$geocodedAny = false): array {
+    $geocodedAny = false;
     if (!$intent) return [];
     $count      = max(1, min(10, (int) ($intent['count'] ?? NEAREST_DEFAULT)));
     $candidates = is_array($intent['candidates'] ?? null)
@@ -356,6 +391,7 @@ function intent_to_groups(?array $intent, bool $tafOnly = false): array {
             $location = geocode_place($queryUsed);
         }
         if ($location === null) continue;
+        $geocodedAny = true;
         $stations = nearest_metar_stations($location['lat'], $location['lon'], $count, $tafOnly);
         if (!$stations) continue;
         $groups[] = [
