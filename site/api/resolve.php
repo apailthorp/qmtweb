@@ -82,16 +82,26 @@ $reqStartMs = (int) (microtime(true) * 1000);
 $q = trim($_GET['q'] ?? '');
 if ($q === '') json_err('Type a place, ZIP, or airport to search online.', 422);
 
+// Detect "TAF" in the raw query BEFORE deterministic_intent strips it as
+// filler. When present, narrow the bbox lookup to TAF-publishing stations
+// (a subset of METAR-reporting stations — typically the major airports;
+// e.g. for the Seattle bbox: METAR returns 9 stations, TAF returns 6).
+// The intent / candidates / cache key stay TAF-agnostic — only the final
+// AWC endpoint switches — so the same Gemini result serves both "King
+// County" and "King County TAF" with the filter applied client-side of
+// the cache.
+$tafOnly = (bool) preg_match('/\btafs?\b/i', $q);
+
 // Tier-1 first — saves the bulk of LLM quota.
 $tier1Intent = deterministic_intent($q);
-$groups = intent_to_groups($tier1Intent);
+$groups = intent_to_groups($tier1Intent, $tafOnly);
 $tier1GroupCount = count($groups);
 
 // Tier-2 cache upgrade — preferred over Tier-1 when richer (multi-group).
 $cacheHit = false;
 $cachedTier2 = intent_cached_only($q);
 if ($cachedTier2) {
-    $cachedGroups = intent_to_groups($cachedTier2);
+    $cachedGroups = intent_to_groups($cachedTier2, $tafOnly);
     if (count($cachedGroups) > count($groups)) {
         $groups = $cachedGroups;
         $cacheHit = true;
@@ -116,7 +126,7 @@ $shouldEscalate = empty($groups) || (count($groups) === 1 && !$cacheHit && is_li
 if ($shouldEscalate) {
     $orchestration = run_tier2_chain($q);
     if ($orchestration['intent']) {
-        $tier2Groups = intent_to_groups($orchestration['intent']);
+        $tier2Groups = intent_to_groups($orchestration['intent'], $tafOnly);
         // Adopt Tier-2 if it strictly improves on Tier-1.
         if (count($tier2Groups) > count($groups)) {
             $groups = $tier2Groups;
@@ -315,30 +325,53 @@ function provider_attribution(string $name): array {
 // Both Tier-1 and Tier-2 produce the same shape (`['candidates' => [...], 'count' => N]`).
 // This helper turns either one into the public `[{interpreted, stations[]}, ...]`
 // list by geocoding each candidate and grounding it in live aviationweather.gov
-// METAR data. Capped at 3 candidates server-side so a malformed or malicious
-// model response can't trigger an unbounded fan-out.
-function intent_to_groups(?array $intent): array {
+// data. Capped at 3 candidates server-side so a malformed or malicious model
+// response can't trigger an unbounded fan-out.
+//
+// When $tafOnly is true, the bbox lookup uses the AWC TAF endpoint instead of
+// METAR — narrows results to stations that publish forecast TAFs (a subset of
+// METAR-reporting stations). The group label also flips from "Nearest METAR
+// to …" to "Nearest TAF to …" so the user can see the narrowed search applied.
+function intent_to_groups(?array $intent, bool $tafOnly = false): array {
     if (!$intent) return [];
     $count      = max(1, min(10, (int) ($intent['count'] ?? NEAREST_DEFAULT)));
     $candidates = is_array($intent['candidates'] ?? null)
         ? array_slice($intent['candidates'], 0, 3)
         : [];
 
+    $product = $tafOnly ? 'TAF' : 'METAR';
     $groups = [];
     foreach ($candidates as $candidate) {
         if (!is_array($candidate)) continue;
         $location = null;
-        if (!empty($candidate['zip'])) $location = geocode_place((string) $candidate['zip']);
+        $queryUsed = null;
+        if (!empty($candidate['zip'])) {
+            $queryUsed = (string) $candidate['zip'];
+            $location = geocode_place($queryUsed);
+        }
         // If the ZIP geocode returned nothing (or there was no ZIP), fall through
         // to the place name so the candidate still has a chance to resolve.
         if ($location === null && !empty($candidate['place'])) {
-            $location = geocode_place((string) $candidate['place']);
+            $queryUsed = (string) $candidate['place'];
+            $location = geocode_place($queryUsed);
         }
         if ($location === null) continue;
-        $stations = nearest_metar_stations($location['lat'], $location['lon'], $count);
+        $stations = nearest_metar_stations($location['lat'], $location['lon'], $count, $tafOnly);
         if (!$stations) continue;
         $groups[] = [
-            'interpreted' => 'Nearest METAR to ' . $location['label'],
+            'interpreted' => "Nearest $product to " . $location['label'],
+            // Diagnostic fields the client surfaces on hover so the user can
+            // see WHY a query resolved here. `sent` is what we fed the
+            // geocoder (the intent's place/zip — possibly LLM-rewritten);
+            // `raw` is the geocoder's verbose match. Together they explain
+            // results like "opossum → Ripley, TN".
+            'sent'        => $queryUsed,
+            'raw'         => $location['raw'] ?? null,
+            // Coordinates of the resolved point — the client turns the group
+            // header / status line into a link to openstreetmap.org centered
+            // on this lat/lon so a click jumps straight to the map.
+            'lat'         => $location['lat'],
+            'lon'         => $location['lon'],
             'stations'    => $stations,
         ];
     }
@@ -406,13 +439,18 @@ function deterministic_intent(string $q): array {
 }
 
 // --- Grounded station lookup --------------------------------------------------
-// Query live aviationweather.gov METARs in a bbox around the point, widening if
-// too sparse, then sort by great-circle distance. Stations come ONLY from here.
-function nearest_metar_stations(float $lat, float $lon, int $count): array {
+// Query live aviationweather.gov stations in a bbox around the point, widening
+// if too sparse, then sort by great-circle distance. Stations come ONLY from
+// here. When $tafOnly is true, the TAF endpoint is queried instead of METAR —
+// the subset of reporting stations that publish forecast TAFs (typically the
+// major airports). Same record shape (icaoId, lat, lon, name) either way, so
+// the rest of the loop is endpoint-agnostic.
+function nearest_metar_stations(float $lat, float $lon, int $count, bool $tafOnly = false): array {
+    $endpoint = $tafOnly ? 'taf' : 'metar';
     $half = 0.6; // degrees (~45–65 km); widen on retry
     for ($try = 0; $try < 3; $try++) {
         $bbox = sprintf('%.4f,%.4f,%.4f,%.4f', $lat - $half, $lon - $half, $lat + $half, $lon + $half);
-        $data = http_get_json('https://aviationweather.gov/api/data/metar?format=json&bbox=' . rawurlencode($bbox));
+        $data = http_get_json("https://aviationweather.gov/api/data/$endpoint?format=json&bbox=" . rawurlencode($bbox));
 
         if (is_array($data) && count($data) > 0) {
             $stations = [];

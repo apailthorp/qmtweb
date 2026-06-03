@@ -406,10 +406,17 @@ function geocode_place(string $q): ?array {
         $data = http_get_json("https://api.zippopotam.us/us/$q");
         if ($data && !empty($data['places'][0])) {
             $p = $data['places'][0];
+            $label = trim(($p['place name'] ?? '') . ', ' . ($p['state abbreviation'] ?? '') . " $q");
             $out = [
                 'lat'   => (float) $p['latitude'],
                 'lon'   => (float) $p['longitude'],
-                'label' => trim(($p['place name'] ?? '') . ', ' . ($p['state abbreviation'] ?? '') . " $q"),
+                'label' => $label,
+                // `raw` is the geocoder's verbose form — used by the client to
+                // explain WHY a query resolved where it did (hover tooltip on
+                // the group header / status line). For ZIPs it's not very
+                // different from the label, but kept for symmetry with the
+                // Nominatim path.
+                'raw'   => $label,
             ];
             cache_set($cacheKey, $out);
             return $out;
@@ -419,16 +426,69 @@ function geocode_place(string $q): ?array {
 
     // Place name → Nominatim. Fair-use: real UA (set globally) + Referer, low
     // volume (click-only), cached above. Attribute OpenStreetMap in the UI.
-    $url = 'https://nominatim.openstreetmap.org/search?format=json&limit=1&q=' . rawurlencode($q);
+    // addressdetails=1 returns structured fields (city/county/state, ISO codes)
+    // so we can compose a compact "Place, ST" label instead of Nominatim's
+    // verbose display_name (e.g. "King County, Texas, 79236, United States").
+    $url = 'https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&limit=1&q=' . rawurlencode($q);
     $data = http_get_json($url, ['Referer: https://pailthorp.net']);
     if ($data && !empty($data[0]['lat'])) {
+        $hit = $data[0];
+        $label = compose_compact_label($hit['address'] ?? null, (string) ($hit['display_name'] ?? $q));
         $out = [
-            'lat'   => (float) $data[0]['lat'],
-            'lon'   => (float) $data[0]['lon'],
-            'label' => $data[0]['display_name'] ?? $q,
+            'lat'   => (float) $hit['lat'],
+            'lon'   => (float) $hit['lon'],
+            'label' => $label,
+            // Nominatim's verbose display_name. Surfaced by the client as a
+            // hover tooltip on the group header so the user can see exactly
+            // what the geocoder matched — e.g. searching "opossum" might
+            // resolve to "Opossum, Ripley, Lauderdale County, Tennessee".
+            'raw'   => (string) ($hit['display_name'] ?? $label),
         ];
         cache_set($cacheKey, $out);
         return $out;
     }
     return null;
+}
+
+// Turn Nominatim's structured `address` block into a compact "Place, ST" /
+// "Place, COUNTRY" form. Examples:
+//   {city:"Springfield", state:"Illinois", ISO3166-2-lvl4:"US-IL", country_code:"us"}
+//      → "Springfield, IL"
+//   {county:"King County", state:"Texas", ISO3166-2-lvl4:"US-TX", country_code:"us"}
+//      → "King County, TX"
+//   {city:"Toronto", state:"Ontario", country_code:"ca"}    → "Toronto, CA"
+//   {country:"France", country_code:"fr"}                  → "France"
+// Falls back to the full display_name when the address block is missing
+// or doesn't yield a usable place token (e.g. for ocean/region results).
+function compose_compact_label(?array $addr, string $fallback): string {
+    if (!is_array($addr)) return $fallback;
+
+    // Prefer the smallest-scale named place that exists.
+    $place = $addr['city']
+        ?? $addr['town']
+        ?? $addr['village']
+        ?? $addr['hamlet']
+        ?? $addr['county']
+        ?? $addr['state']
+        ?? $addr['country']
+        ?? null;
+    if (!is_string($place) || $place === '') return $fallback;
+
+    $country = isset($addr['country_code']) ? strtolower((string) $addr['country_code']) : '';
+
+    // US: prefer the 2-letter state code from ISO3166-2-lvl4 ("US-TX"). If the
+    // place IS the state itself (e.g. "Washington" was looked up), don't
+    // append the state suffix.
+    if ($country === 'us') {
+        $iso = (string) ($addr['ISO3166-2-lvl4'] ?? '');
+        if (preg_match('/-([A-Z]{2})$/', $iso, $m) && $place !== ($addr['state'] ?? '')) {
+            return $place . ', ' . $m[1];
+        }
+    }
+
+    // International: append the country code (uppercase) unless place IS the country.
+    if ($country !== '' && $place !== ($addr['country'] ?? '')) {
+        return $place . ', ' . strtoupper($country);
+    }
+    return $place;
 }
