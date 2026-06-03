@@ -19,6 +19,9 @@ const GROQ_ATTRIBUTION = [
     'url'  => 'https://groq.com/',
 ];
 
+// Default model when GROQ_MODEL isn't set / is empty.
+const GROQ_DEFAULT_MODEL = 'llama-3.1-8b-instant';
+
 function groq_intent(string $q): ?array {
     $key = server_secret('GROQ_API_KEY');
     if (!$key) { groq_status('off'); return null; }
@@ -30,12 +33,12 @@ function groq_intent(string $q): ?array {
         return $cached;
     }
 
-    // Free-tier model. Override via GROQ_MODEL secret. llama-3.1-8b-instant is
-    // fast + reliably hits the JSON-mode intent extraction; bump to
-    // llama-3.3-70b-versatile if quality on edge cases is worth the higher
+    // Free-tier model. Override via GROQ_MODEL secret. Default lives in
+    // GROQ_DEFAULT_MODEL. llama-3.1-8b-instant is fast + reliably hits the
+    // JSON-mode intent extraction; bump to llama-3.3-70b-versatile if
+    // quality on edge cases is worth the higher
     // per-request quota cost.
-    $model = trim((string) (server_secret('GROQ_MODEL') ?? 'llama-3.1-8b-instant'));
-    if ($model === '') $model = 'llama-3.1-8b-instant';
+    $model = groq_model();
 
     $status = 0; $errBody = null;
     $result = intent_call_openai_compatible(
@@ -59,6 +62,13 @@ function groq_intent(string $q): ?array {
     cache_set($cacheKey, $result);
     groq_status('live');
     return $result;
+}
+
+// Public read of the currently-configured Groq model. Used by health.php
+// AND groq_intent() so the advertised value matches the live call.
+function groq_model(): string {
+    $model = trim((string) (server_secret('GROQ_MODEL') ?? GROQ_DEFAULT_MODEL));
+    return $model === '' ? GROQ_DEFAULT_MODEL : $model;
 }
 
 function groq_status(?string $newValue = null): string {

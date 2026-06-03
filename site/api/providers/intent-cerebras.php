@@ -16,6 +16,11 @@ const CEREBRAS_ATTRIBUTION = [
     'url'  => 'https://www.cerebras.ai/',
 ];
 
+// Default model when CEREBRAS_MODEL isn't set / is empty. Cerebras's free
+// roster rotates aggressively; update here (single source) when verify-providers
+// reports drift.
+const CEREBRAS_DEFAULT_MODEL = 'gpt-oss-120b';
+
 // Returns null on no-key / failure / unparseable. Sets cerebras_status() +
 // cerebras_detail() for the orchestrator + footer rendering.
 function cerebras_intent(string $q): ?array {
@@ -35,11 +40,9 @@ function cerebras_intent(string $q): ?array {
 
     // Free-tier model. Override via CEREBRAS_MODEL secret. Cerebras's free
     // roster rotates aggressively — re-verify against the live /v1/models
-    // endpoint if calls start 404ing on the model name (see README provider
-    // table for current default). gpt-oss-120b is the current verified
-    // free-tier model with reliable JSON-mode support.
-    $model = trim((string) (server_secret('CEREBRAS_MODEL') ?? 'gpt-oss-120b'));
-    if ($model === '') $model = 'gpt-oss-120b';
+    // endpoint via `npm run verify:providers` if calls start 404ing on the
+    // model name. Default value lives in CEREBRAS_DEFAULT_MODEL.
+    $model = cerebras_model();
 
     $status = 0; $errBody = null;
     $result = intent_call_openai_compatible(
@@ -63,6 +66,13 @@ function cerebras_intent(string $q): ?array {
     cache_set($cacheKey, $result);
     cerebras_status('live');
     return $result;
+}
+
+// Public read of the currently-configured Cerebras model. Used by health.php
+// AND cerebras_intent() so the advertised value matches the live call.
+function cerebras_model(): string {
+    $model = trim((string) (server_secret('CEREBRAS_MODEL') ?? CEREBRAS_DEFAULT_MODEL));
+    return $model === '' ? CEREBRAS_DEFAULT_MODEL : $model;
 }
 
 function cerebras_status(?string $newValue = null): string {

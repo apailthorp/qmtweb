@@ -32,20 +32,26 @@ require __DIR__ . '/providers/intent-groq.php';
 
 // Same chain order as resolve.php's PROVIDER_CHAIN. Each entry exposes the
 // public attribution constant defined in its adapter file + the secret key
-// name to test for presence. Kept in resolve order so the client renders
+// name to test for presence + the model accessor that mirrors the trim+default
+// logic from the intent function. Kept in resolve order so the client renders
 // the same default sequence on a fresh page load.
 $entries = [
-    ['name' => 'gemini',     'key' => 'GEMINI_API_KEY',     'attribution' => GEMINI_ATTRIBUTION],
-    ['name' => 'openrouter', 'key' => 'OPENROUTER_API_KEY', 'attribution' => OPENROUTER_ATTRIBUTION],
-    ['name' => 'cerebras',   'key' => 'CEREBRAS_API_KEY',   'attribution' => CEREBRAS_ATTRIBUTION],
-    ['name' => 'groq',       'key' => 'GROQ_API_KEY',       'attribution' => GROQ_ATTRIBUTION],
+    ['name' => 'gemini',     'key' => 'GEMINI_API_KEY',     'attribution' => GEMINI_ATTRIBUTION,     'model_fn' => 'gemini_model'],
+    ['name' => 'openrouter', 'key' => 'OPENROUTER_API_KEY', 'attribution' => OPENROUTER_ATTRIBUTION, 'model_fn' => 'openrouter_model'],
+    ['name' => 'cerebras',   'key' => 'CEREBRAS_API_KEY',   'attribution' => CEREBRAS_ATTRIBUTION,   'model_fn' => 'cerebras_model'],
+    ['name' => 'groq',       'key' => 'GROQ_API_KEY',       'attribution' => GROQ_ATTRIBUTION,       'model_fn' => 'groq_model'],
 ];
 
 $providers = [];
 foreach ($entries as $e) {
+    $configured = !empty(server_secret($e['key']));
     $providers[] = [
         'name'        => $e['name'],
-        'configured'  => !empty(server_secret($e['key'])),
+        'configured'  => $configured,
+        // Only emit `model` when a key is actually present — otherwise we'd
+        // be advertising a default the user hasn't opted into. Mirrors the
+        // attribution data (already public-only).
+        'model'       => $configured ? $e['model_fn']() : null,
         'attribution' => $e['attribution'],
     ];
 }

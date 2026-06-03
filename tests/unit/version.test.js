@@ -3,7 +3,7 @@ import {
   resolveVersion,
   shouldHide,
   recordVersion,
-  commitUrl,
+  releasesUrl,
   VERSION_STORE_KEY,
 } from "../../site/js/version.js";
 import { applyVersionToken, applyShaToken, buildVersion, shortSha } from "../../scripts/stamp-version.mjs";
@@ -95,34 +95,19 @@ describe("recordVersion", () => {
   });
 });
 
-describe("commitUrl", () => {
-  it("builds a GitHub commit URL for a 7-char hex SHA", () => {
-    expect(commitUrl("abc1234")).toBe("https://github.com/apailthorp/qmtweb/commit/abc1234");
+describe("releasesUrl", () => {
+  it("points to the GitHub releases page when the version is stamped", () => {
+    expect(releasesUrl("v1.4.3 · abc1234")).toBe("https://github.com/apailthorp/qmtweb/releases");
   });
 
-  it("accepts a full 40-char hex SHA", () => {
-    const long = "abcdef1234567890abcdef1234567890abcdef12";
-    expect(commitUrl(long)).toBe(`https://github.com/apailthorp/qmtweb/commit/${long}`);
-  });
-
-  it("returns null for the unstamped placeholder (local dev)", () => {
-    expect(commitUrl("__APP_VERSION_SHA__")).toBeNull();
-  });
-
-  it("returns null for the 'local' fallback from shortSha()", () => {
-    expect(commitUrl("local")).toBeNull();
+  it("returns null for unstamped 'dev'", () => {
+    expect(releasesUrl("dev")).toBeNull();
   });
 
   it("returns null for empty / undefined / null", () => {
-    expect(commitUrl("")).toBeNull();
-    expect(commitUrl(undefined)).toBeNull();
-    expect(commitUrl(null)).toBeNull();
-  });
-
-  it("rejects non-hex / shape-mismatched values to avoid broken links", () => {
-    expect(commitUrl("not-a-sha")).toBeNull();
-    expect(commitUrl("abc12")).toBeNull(); // too short
-    expect(commitUrl("xyz1234")).toBeNull(); // non-hex
+    expect(releasesUrl("")).toBeNull();
+    expect(releasesUrl(undefined)).toBeNull();
+    expect(releasesUrl(null)).toBeNull();
   });
 });
 
