@@ -673,6 +673,26 @@ button {
   margin-top: 0.25rem;
 }
 
+/* Group header / status line is a link to openstreetmap.org centred on the
+ * resolved location. Subtle styling — inherits the surrounding text colour
+ * so it doesn't read as a "blue link"; underline only on real hover so
+ * touch/focus doesn't flicker decoration. Mirrors the version-tag link
+ * pattern at the bottom of the page. */
+.icao-group-link {
+  color: inherit;
+  text-decoration: none;
+  cursor: pointer;
+}
+.icao-group-link:focus-visible {
+  text-decoration: underline;
+  outline: none;
+}
+@media (hover: hover) {
+  .icao-group-link:hover {
+    text-decoration: underline;
+  }
+}
+
 .icao-actions {
   display: flex;
   flex-wrap: wrap;
@@ -729,16 +749,16 @@ footer p { margin: 0; }
  * about why Online ↗ stopped returning multi-group results. Set by JS on a
  * fallback response from resolve.php; cleared on the next successful Tier-2
  * call. Hover the link for a plain-English explanation (set via title). */
-/* Separator between adjacent provider links in the chain credit list. CSS-
- * driven (not text nodes) so JS-reordering the children doesn't have to
- * shuffle separator nodes around — they just regenerate. The `+ a` selector
- * also handles the chip case: a busy chip lands BETWEEN two links, so the
- * second link wouldn't be adjacent to the first; we add a separate rule for
- * the `a + .tier2-busy + a` chain so the chip-following link still gets one. */
-.tier2-list a + a::before,
-.tier2-list a + .tier2-busy + a::before {
-  content: " · ";
+/* Separator between adjacent provider links. Standalone <span> rather than
+ * a ::before pseudo-element of the next link — the pseudo approach made the
+ * link's hover state + underline extend into the gap (the pseudo is part of
+ * the link's box, so the link's :hover decoration reached through the
+ * separator). The sibling span is outside any link, has pointer-events:none
+ * so it never triggers a link's hover, and is hidden from assistive tech
+ * since the separator is purely visual. */
+.tier2-list .tier2-sep {
   color: var(--fg-muted);
+  pointer-events: none;
 }
 
 /* Per-provider fallback styling. When the chain rolls forward, JS adds

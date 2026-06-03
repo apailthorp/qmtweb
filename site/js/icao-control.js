@@ -65,15 +65,37 @@ export async function initTier2Health() {
     const data = await res.json().catch(() => null);
     const providers = Array.isArray(data?.tier2_providers) ? data.tier2_providers : [];
     if (!providers.length) return; // no data → leave HTML as-is
-    const configured = new Set(
-      providers.filter((p) => p && p.configured && typeof p.name === "string").map((p) => p.name),
-    );
-    // Remove (not just hide) unconfigured links so the CSS adjacent-sibling
-    // separator selector reflects the actual visible order. display:none
-    // would leave the link in the DOM and the separator rule would still see
-    // it as adjacent, dropping " · " incorrectly.
+    // Index by name for the model lookup below. Configured providers also get
+    // their model surfaced via the link's `title` attribute, so hovering
+    // (desktop) or assistive-tech focus reveals "Gemini (gemini-2.5-flash)".
+    // Mobile users don't see hover titles, but the cost is zero.
+    const byName = new Map();
+    for (const p of providers) {
+      if (p && p.configured && typeof p.name === "string") byName.set(p.name, p);
+    }
+    // Remove unconfigured links + their adjacent separator span (preceding,
+    // or following when the removed link was the first). Keeps the chain
+    // visually clean and prevents orphan " · " at the head or tail of the
+    // list. Configured links also get their model surfaced via `title`.
     list.querySelectorAll("a[data-provider]").forEach((a) => {
-      if (!configured.has(a.dataset.provider)) a.remove();
+      const p = byName.get(a.dataset.provider);
+      if (!p) {
+        const prev = a.previousElementSibling;
+        const next = a.nextElementSibling;
+        if (prev && prev.classList.contains("tier2-sep")) prev.remove();
+        else if (next && next.classList.contains("tier2-sep")) next.remove();
+        a.remove();
+        return;
+      }
+      const brand = a.textContent || a.dataset.provider;
+      if (typeof p.model === "string" && p.model) {
+        const modelTitle = `${brand} (${p.model})`;
+        a.title = modelTitle;
+        // Stash for restoration after a Tier-2 fallback temporarily replaces
+        // the title with a rich error message — markTier2Attribution reads
+        // this on clear so the model tooltip survives across search cycles.
+        a.dataset.modelTitle = modelTitle;
+      }
     });
   } catch {
     // Network error / endpoint missing — leave the static HTML untouched.
@@ -99,12 +121,26 @@ let tier2CountdownScope = null;
 function reorderTier2List(provider) {
   const list = document.getElementById("tier2-list");
   if (!list || !provider) return;
-  const sticky = list.querySelector(`a[data-provider="${provider}"]`);
-  // Already first → no DOM churn. firstElementChild because there may be
-  // whitespace text nodes between, but inside #tier2-list we wrote the HTML
-  // with no inter-element whitespace specifically so JS can move freely.
-  if (!sticky || list.firstElementChild === sticky) return;
-  list.prepend(sticky);
+  const links = Array.from(list.querySelectorAll("a[data-provider]"));
+  const sticky = links.find((a) => a.dataset.provider === provider);
+  if (!sticky || links[0] === sticky) return;
+  // Sticky first; remaining links keep their existing relative order.
+  const ordered = [sticky, ...links.filter((a) => a !== sticky)];
+  // Rebuild children as a, sep, a, sep, … so the separator spans stay
+  // interleaved correctly after the move. We can't just `list.prepend(sticky)`
+  // any more because the corresponding sep would no longer sit between the
+  // right pair of links.
+  list.innerHTML = "";
+  ordered.forEach((a, i) => {
+    if (i > 0) {
+      const sep = document.createElement("span");
+      sep.className = "tier2-sep";
+      sep.setAttribute("aria-hidden", "true");
+      sep.textContent = " · ";
+      list.appendChild(sep);
+    }
+    list.appendChild(a);
+  });
 }
 
 function markTier2Attribution(state, detail, provider) {
@@ -117,9 +153,17 @@ function markTier2Attribution(state, detail, provider) {
 
   // Clear all prior per-provider state — idempotent. A second "ok" call after
   // a recovered chain clears successfully even if no prior fallback existed.
+  // Restore the model-name title (stashed by initTier2Health in
+  // data-model-title) so hovering the brand still shows e.g. "Gemini
+  // (gemini-2.5-flash)" after a search runs. Without this restore, the
+  // first search wiped the model titles for the lifetime of the page.
   el.querySelectorAll("a[data-provider]").forEach((a) => {
     a.classList.remove("is-fallback");
-    a.removeAttribute("title");
+    if (a.dataset.modelTitle) {
+      a.title = a.dataset.modelTitle;
+    } else {
+      a.removeAttribute("title");
+    }
   });
   if (tier2CountdownTimer) {
     clearInterval(tier2CountdownTimer);
@@ -632,6 +676,10 @@ export function initIcaoControl({
   function setStatus(text, state = "", trailIcon = "") {
     if (!searchStatusEl) return;
     searchStatusEl.textContent = text ?? "";
+    // Drop any diagnostic title set by a prior call. The single-group online
+    // path re-sets it after this returns; everything else (loading, error,
+    // not-found, ambiguous-multi) has nothing useful to put there.
+    searchStatusEl.removeAttribute("title");
     if (trailIcon === "magnify") {
       const svgNS = "http://www.w3.org/2000/svg";
       const svg = document.createElementNS(svgNS, "svg");
@@ -830,6 +878,59 @@ export function initIcaoControl({
     markTruncatedResults();
   }
 
+  // Diagnostic tooltip for a resolved group — surfaces WHY a query landed
+  // where it did (e.g. searching "opossum" → "Ripley, TN" because Nominatim
+  // matched a place called "Opossum" in Ripley). Returns null when neither
+  // field is populated. The server response carries:
+  //   group.sent — what we sent to the geocoder (possibly LLM-rewritten,
+  //                e.g. "Springfield, IL" for an ambiguous "Springfield")
+  //   group.raw  — Nominatim's verbose display_name for the matched location
+  function formatGroupDiagnosticTooltip(group) {
+    if (!group) return null;
+    const sent = typeof group.sent === "string" ? group.sent.trim() : "";
+    const raw  = typeof group.raw  === "string" ? group.raw.trim()  : "";
+    if (!sent && !raw) return null;
+    const lines = [];
+    if (sent) lines.push(`Geocoder query: ${sent}`);
+    if (raw)  lines.push(`Match: ${raw}`);
+    return lines.join("\n");
+  }
+
+  // openstreetmap.org URL for the resolved point. The mlat/mlon query params
+  // drop a marker; the hash chooses the initial centre + zoom. Zoom 12 shows
+  // a county-sized area — appropriate for a "place" pin without losing
+  // surrounding context. Returns null when coords are missing or malformed.
+  function osmUrlFor(group) {
+    const lat = typeof group?.lat === "number" ? group.lat : Number(group?.lat);
+    const lon = typeof group?.lon === "number" ? group.lon : Number(group?.lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+    return `https://www.openstreetmap.org/?mlat=${lat}&mlon=${lon}#map=12/${lat}/${lon}`;
+  }
+
+  // Build the interpreted-text node for a group — an <a> linking to OSM if we
+  // have coords, otherwise a plain text node. The diagnostic tooltip lives on
+  // the link element itself when present (so hover-to-explain still works).
+  function makeGroupHeadingNode(group, text) {
+    const tip = formatGroupDiagnosticTooltip(group);
+    const url = osmUrlFor(group);
+    if (!url) {
+      // Plain text — wrap in a span so the title attribute has somewhere to
+      // attach. Keeps the calling site code-path symmetric.
+      const span = document.createElement("span");
+      span.textContent = text;
+      if (tip) span.title = tip;
+      return span;
+    }
+    const a = document.createElement("a");
+    a.className = "icao-group-link";
+    a.textContent = text;
+    a.href = url;
+    a.target = "_blank";
+    a.rel = "noopener";
+    if (tip) a.title = tip;
+    return a;
+  }
+
   // Render online (nearest-METAR) results into the same dropdown. Station shape:
   // { icao, name, distance_km }. Clicking reuses the data-add-icao handler.
   // Online search now returns one group per resolved location (ambiguous
@@ -855,7 +956,7 @@ export function initIcaoControl({
         const header = document.createElement("li");
         header.className = "icao-result-group-header";
         header.setAttribute("role", "presentation");
-        header.textContent = group.interpreted ?? "";
+        header.append(makeGroupHeadingNode(group, group.interpreted ?? ""));
         searchResults.append(header);
       }
       for (const s of group.stations) {
@@ -1052,7 +1153,17 @@ export function initIcaoControl({
       if (nonEmpty.length === 0) {
         setStatus("No nearby reporting stations found.", "notfound");
       } else if (nonEmpty.length === 1) {
-        setStatus(nonEmpty[0].interpreted ?? "");
+        // Single-group results don't get a group-header row; render the
+        // interpreted text directly into the status line as an OSM link so
+        // the user can click through to the map (and hover for the geocode
+        // diagnostic). setStatus("") first to clear any prior trail icon /
+        // state class, then replace its textContent with our anchor.
+        setStatus("");
+        if (searchStatusEl) {
+          searchStatusEl.append(
+            makeGroupHeadingNode(nonEmpty[0], nonEmpty[0].interpreted ?? ""),
+          );
+        }
       } else {
         setStatus(`Multiple matches (${nonEmpty.length}) — pick one`);
       }
