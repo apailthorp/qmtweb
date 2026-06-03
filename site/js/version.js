@@ -17,8 +17,7 @@
 // Full design + troubleshooting: docs/VERSIONING.md
 
 const PLACEHOLDER = "__APP_VERSION__";
-const SHA_PLACEHOLDER = "__APP_VERSION_SHA__";
-const COMMIT_BASE = "https://github.com/apailthorp/qmtweb/commit/";
+const RELEASES_URL = "https://github.com/apailthorp/qmtweb/releases";
 export const VERSION_STORE_KEY = "qmtweb.appVersion";
 
 // Turn the raw stamped value into a display string. Unstamped (local dev) or
@@ -29,15 +28,12 @@ export function resolveVersion(raw) {
   return value;
 }
 
-// Build the commit-link URL for the deployed SHA, or null when the SHA isn't
-// stamped (local dev / pre-stamp). Hex-only guard: stamp-version writes a 7-
-// char hex SHA from git; anything else (e.g. the literal "local" fallback or
-// an unsubstituted token) returns null so we don't render a broken link.
-export function commitUrl(sha) {
-  const value = (sha ?? "").trim();
-  if (!value || value === SHA_PLACEHOLDER) return null;
-  if (!/^[0-9a-f]{7,40}$/i.test(value)) return null;
-  return COMMIT_BASE + value;
+// Target for the version-tag link. Always the GitHub releases page when the
+// version is stamped — gives the user a quick "what changed?" jump that
+// preserves context (changelog + asset history) better than the bare commit.
+// Unstamped ("dev") renders without a link.
+export function releasesUrl(version) {
+  return !version || version === "dev" ? null : RELEASES_URL;
 }
 
 // Decide whether to hide the tag. The tag's home is the bottom of the page; it's
@@ -80,10 +76,10 @@ export function initVersionTag(doc = document) {
   if (!el) return;
 
   const version = resolveVersion(doc.documentElement.dataset.version);
-  const href = version === "dev" ? null : commitUrl(el.dataset.sha);
+  const href = releasesUrl(version);
   if (href) {
-    // Wrap the whole stamp in an anchor pointing at the deployed commit so a
-    // click jumps to the exact source on GitHub. `.app-version` itself is
+    // Wrap the whole stamp in an anchor pointing at the GitHub releases page
+    // so a click jumps to the changelog. `.app-version` itself is
     // pointer-events:none (so it never intercepts page clicks); the inner
     // anchor re-enables hits via CSS (.app-version a { pointer-events: auto }).
     el.textContent = "";
