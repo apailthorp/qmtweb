@@ -61,6 +61,12 @@ function groq_intent(string $q): ?array {
     return $result;
 }
 
+// Public read of the currently-configured Groq model. Used by health.php.
+function groq_model(): string {
+    $model = trim((string) (server_secret('GROQ_MODEL') ?? 'llama-3.1-8b-instant'));
+    return $model === '' ? 'llama-3.1-8b-instant' : $model;
+}
+
 function groq_status(?string $newValue = null): string {
     static $value = 'off';
     if ($newValue !== null) $value = $newValue;

@@ -75,6 +75,14 @@ function gemini_intent(string $q): ?array {
     return $result;
 }
 
+// Public read of the currently-configured Gemini model. Used by /api/health.php
+// to surface the active value in the UI without re-implementing the resolution
+// logic. Mirrors the trim + fallback applied inside gemini_intent().
+function gemini_model(): string {
+    $model = trim((string) (server_secret('GEMINI_MODEL') ?? 'gemini-2.5-flash'));
+    return $model === '' ? 'gemini-2.5-flash' : $model;
+}
+
 // Tier-2 outcome from the most recent gemini_intent() call. The orchestrator
 // reads this to decide whether to roll over to the next provider, and the
 // client uses it to render the footer state. Values:

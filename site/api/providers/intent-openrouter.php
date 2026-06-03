@@ -67,6 +67,13 @@ function openrouter_intent(string $q): ?array {
     return $result;
 }
 
+// Public read of the currently-configured OpenRouter model. Used by health.php.
+function openrouter_model(): string {
+    $model = trim((string) (server_secret('OPENROUTER_MODEL')
+        ?? 'meta-llama/llama-3.2-3b-instruct:free'));
+    return $model === '' ? 'meta-llama/llama-3.2-3b-instruct:free' : $model;
+}
+
 function openrouter_status(?string $newValue = null): string {
     static $value = 'off';
     if ($newValue !== null) $value = $newValue;

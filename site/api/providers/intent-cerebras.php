@@ -65,6 +65,12 @@ function cerebras_intent(string $q): ?array {
     return $result;
 }
 
+// Public read of the currently-configured Cerebras model. Used by health.php.
+function cerebras_model(): string {
+    $model = trim((string) (server_secret('CEREBRAS_MODEL') ?? 'gpt-oss-120b'));
+    return $model === '' ? 'gpt-oss-120b' : $model;
+}
+
 function cerebras_status(?string $newValue = null): string {
     static $value = 'off';
     if ($newValue !== null) $value = $newValue;
