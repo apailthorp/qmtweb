@@ -334,6 +334,259 @@ test.describe("ICAO tiles — drag and drop reorder", () => {
   });
 });
 
+// Mulberry32 — small, fast, well-distributed seedable PRNG. We use a fixed
+// seed so the random target order is REPRODUCIBLE across runs: a failure
+// gives us the exact drag sequence to replay. To explore a different
+// permutation, change the seed constant in the test.
+function seededRandom(seed) {
+  return function () {
+    seed |= 0;
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function shuffleSeeded(arr, rng) {
+  const out = [...arr];
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
+}
+
+// Longest common subsequence (relative-order-preserving) of two permutations.
+// The elements in the LCS are the ones that DON'T need to move — every other
+// element gets exactly one drag, giving the theoretical minimum of N - |LCS|.
+//
+// Optional `preferStable(x)` biases the traceback: when DP ties between i--
+// (drop a's element) and j-- (drop b's element), we choose j-- if a[i-1]
+// passes preferStable. The active-only test uses this to ensure every dot
+// lands in the LCS — without the bias, an equally-valid LCS could include a
+// pill instead of a dot, leaving a dot non-stable and forcing it to be a
+// drag source (which would violate the "only pills move" constraint).
+function lcs(a, b, preferStable = null) {
+  const n = a.length, m = b.length;
+  const dp = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+  for (let i = 1; i <= n; i++) {
+    for (let j = 1; j <= m; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1] + 1
+        : Math.max(dp[i - 1][j], dp[i][j - 1]);
+    }
+  }
+  const result = [];
+  let i = n, j = m;
+  while (i > 0 && j > 0) {
+    if (a[i - 1] === b[j - 1]) { result.unshift(a[i - 1]); i--; j--; }
+    else if (dp[i - 1][j] > dp[i][j - 1]) i--;
+    else if (dp[i][j - 1] > dp[i - 1][j]) j--;
+    else if (preferStable && preferStable(a[i - 1])) j--;
+    else i--;
+  }
+  return result;
+}
+
+// Build a target permutation that keeps the inactive tiles (dots) in their
+// original relative order and reassigns the active tiles (pills) to a random
+// subset of the 12 positions. Two seeded steps:
+//   1. Pick which 6 of the 12 positions hold pills (subset). The other 6
+//      positions hold dots in their original order — that's what makes the
+//      dots a "fixed scaffolding" the LCS can always preserve.
+//   2. Permute which pill lands in which of those 6 positions.
+// Together they cover both "pill ↔ dot position swaps" and "pill ↔ pill
+// reshuffles" within a single shuffle.
+function buildActiveShuffleTarget(initialOrder, activeSet, rng) {
+  const N = initialOrder.length;
+  const activeOrder = initialOrder.filter((icao) => activeSet.has(icao));
+  const inactiveOrder = initialOrder.filter((icao) => !activeSet.has(icao));
+
+  const allPositions = Array.from({ length: N }, (_, i) => i);
+  const tilePositions = new Set(
+    shuffleSeeded(allPositions, rng).slice(0, activeOrder.length),
+  );
+  const shuffledActive = shuffleSeeded(activeOrder, rng);
+
+  const target = new Array(N);
+  let activeIdx = 0, inactiveIdx = 0;
+  for (let i = 0; i < N; i++) {
+    target[i] = tilePositions.has(i)
+      ? shuffledActive[activeIdx++]
+      : inactiveOrder[inactiveIdx++];
+  }
+  return target;
+}
+
+// Plan the minimum sequence of insertion-drags that turns `cur` into `tgt`.
+// Strategy: elements in `stable` (defaults to the LCS) stay put. For each
+// non-stable element X (walked in tgt order), drag X to just BEFORE its
+// right anchor — the first stable element appearing after X in tgt. If no
+// right anchor exists (X belongs after all anchors), drag X AFTER the
+// current last element. Each non-stable element gets exactly one drag,
+// matching N - |stable|.
+//
+// Passing a custom `stable` set lets the caller constrain which tiles are
+// SOURCES: only non-stable tiles ever appear in `plan[i].srcIcao`. The
+// active-only test passes {all dots} so the planner never picks a dot as
+// a source.
+//
+// Returns [{srcIcao, dstIcao, where: "before"|"after"}, ...].
+function computeMinDragPlan(cur, tgt, stable = null) {
+  if (stable === null) stable = new Set(lcs(cur, tgt));
+  const current = [...cur];
+  const plan = [];
+  for (let i = 0; i < tgt.length; i++) {
+    const x = tgt[i];
+    if (stable.has(x)) continue;
+    let rightAnchor = null;
+    for (let k = i + 1; k < tgt.length; k++) {
+      if (stable.has(tgt[k])) { rightAnchor = tgt[k]; break; }
+    }
+    if (rightAnchor !== null) {
+      plan.push({ srcIcao: x, dstIcao: rightAnchor, where: "before" });
+      const j = current.indexOf(x);
+      const moved = current.splice(j, 1)[0];
+      current.splice(current.indexOf(rightAnchor), 0, moved);
+    } else {
+      // X belongs after every stable element. Drop after the current tail —
+      // safe because no stable element ever sits to the right of X in tgt.
+      const tail = current[current.length - 1];
+      if (tail === x) continue;
+      plan.push({ srcIcao: x, dstIcao: tail, where: "after" });
+      const j = current.indexOf(x);
+      const moved = current.splice(j, 1)[0];
+      current.push(moved);
+    }
+  }
+  return plan;
+}
+
+// Axis-aware DnD dispatcher: works in BOTH collapsed (horizontal axis) and
+// expanded (vertical axis) modes. The drop handler computes "before" vs
+// "after" via isDropBefore() which uses clientX when collapsed and clientY
+// when expanded — so we set BOTH coordinates to the appropriate half of dst.
+async function dndReorderInPlace(page, srcIcao, dstIcao, where) {
+  await page.evaluate(({ srcIcao, dstIcao, where }) => {
+    const src = document.querySelector(`.tile[data-icao='${srcIcao}']`);
+    const dst = document.querySelector(`.tile[data-icao='${dstIcao}']`);
+    if (!src || !dst) throw new Error(`tile not found: src=${srcIcao} dst=${dstIcao}`);
+    const r = dst.getBoundingClientRect();
+    const clientX = where === "before" ? r.left + 2 : r.right - 2;
+    const clientY = where === "before" ? r.top + 2 : r.bottom - 2;
+    const dataTransfer = new DataTransfer();
+    const fire = (el, type) =>
+      el.dispatchEvent(
+        new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer, clientX, clientY }),
+      );
+    fire(src, "dragstart");
+    fire(dst, "dragover");
+    fire(dst, "drop");
+    fire(src, "dragend");
+  }, { srcIcao, dstIcao, where });
+}
+
+test.describe("ICAO tiles — collapsed-mode active-only random reorder", () => {
+  test("pills shuffled into pill+dot positions via minimum drags; METAR URL reflects new order", async ({ page }) => {
+    await page.goto("/");
+    // Stay collapsed — the panel is closed by default. This exercises drag
+    // across the WHOLE list including the inactive bullet tiles, which is the
+    // path that actually ships to mobile users (they rarely expand the panel).
+    await expect(page.locator("#manage-toggle")).toHaveAttribute("aria-expanded", "false");
+
+    // Snapshot the starting state: every tile in the list (pills + dots), and
+    // which of them are active (only the active set ends up in the METAR URL).
+    const initialOrder = await tileOrder(page);
+    expect(initialOrder).toEqual(SEED_12);
+    const activeSet = new Set(
+      await page.locator("#icao-tiles .tile.is-active").evaluateAll(
+        (els) => els.map((e) => e.getAttribute("data-icao")),
+      ),
+    );
+    expect(activeSet.size).toBe(6);
+
+    // Build a target where the active pills are reassigned to a random subset
+    // of the 12 positions (so a pill can land where a dot currently sits or
+    // vice-versa) and the dots fill the remaining positions in their original
+    // relative order. The dot-order invariant is what lets us plan a sequence
+    // that NEVER drags a dot — every drag source is a pill.
+    const rng = seededRandom(0xc01dca5e);
+    const targetOrder = buildActiveShuffleTarget(initialOrder, activeSet, rng);
+
+    // Spec constraint: at least three active tiles end up at positions
+    // different from their starting positions. Asserts the shuffle actually
+    // exercised the drag handler instead of producing a near-identity layout
+    // by luck.
+    const movedActive = [...activeSet].filter(
+      (icao) => initialOrder.indexOf(icao) !== targetOrder.indexOf(icao),
+    );
+    expect(movedActive.length).toBeGreaterThanOrEqual(3);
+
+    // Force every dot into the stable scaffolding by computing the LCS with
+    // a dots-prefer tiebreaker. With dots locked stable, the planner's
+    // non-stable set is a SUBSET of the active set — guarantees the plan
+    // never drags a dot. Then it can still PROMOTE a pill into the stable
+    // set if its relative position with the dots happens to be preserved
+    // (saves a drag).
+    const isDot = (icao) => !activeSet.has(icao);
+    const stable = new Set(lcs(initialOrder, targetOrder, isDot));
+    // Sanity: every dot landed in stable; LCS may also include some pills.
+    for (const icao of initialOrder) {
+      if (isDot(icao)) expect(stable.has(icao)).toBe(true);
+    }
+
+    const plan = computeMinDragPlan(initialOrder, targetOrder, stable);
+
+    // Two hard guarantees about the plan before we replay it:
+    //   1. Length = N - |stable| (the theoretical minimum for this stable set).
+    //   2. Every source is an active pill — no dot is ever lifted.
+    expect(plan.length).toBe(initialOrder.length - stable.size);
+    for (const step of plan) {
+      expect(activeSet.has(step.srcIcao)).toBe(true);
+    }
+
+    // Replay each drag. The dispatcher targets data-icao (stable across
+    // reorders) rather than DOM index, so plan steps still resolve after
+    // earlier drags shift things around.
+    for (const step of plan) {
+      await dndReorderInPlace(page, step.srcIcao, step.dstIcao, step.where);
+    }
+
+    // Order check: the live tile list now matches the shuffled target.
+    expect(await tileOrder(page)).toEqual(targetOrder);
+
+    // Submission grouping: the form's ids field tracks list order filtered to
+    // the active set. Read it directly first as a fast sanity gate before
+    // setting up the network intercept (gives a clearer failure if the form
+    // is mid-update for some reason).
+    const expectedActiveOrder = targetOrder.filter((icao) => activeSet.has(icao));
+    expect(await idsCodes(page)).toEqual(expectedActiveOrder);
+
+    // Now exercise the actual METAR button — the user's terminal action.
+    // Intercept the upstream navigation so we capture the URL the browser
+    // WOULD have GET'd without actually loading aviationweather.gov (slow,
+    // external, fragile). route.abort() cancels the navigation; the page
+    // stays put with no side effects.
+    let capturedUrl = null;
+    await page.route("https://aviationweather.gov/**", (route) => {
+      capturedUrl = route.request().url();
+      return route.abort();
+    });
+    await page.locator("#metar-form button[type='submit']").click();
+
+    // Poll for the intercepted URL — the click is synchronous but the
+    // navigation request is fired off the event loop tick.
+    await expect.poll(() => capturedUrl, { timeout: 5_000 }).not.toBeNull();
+
+    const submitted = new URL(capturedUrl);
+    const submittedIds = (submitted.searchParams.get("ids") ?? "")
+      .split(/\s+/)
+      .filter(Boolean);
+    expect(submittedIds).toEqual(expectedActiveOrder);
+  });
+});
+
 test.describe("ICAO tiles — persistence", () => {
   test("activation persists across reload", async ({ page }) => {
     await page.goto("/");
