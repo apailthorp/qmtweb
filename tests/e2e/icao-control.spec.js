@@ -566,12 +566,26 @@ test.describe("ICAO tiles — collapsed-mode active-only random reorder", () => 
     // Now exercise the actual METAR button — the user's terminal action.
     // Intercept the upstream navigation so we capture the URL the browser
     // WOULD have GET'd without actually loading aviationweather.gov (slow,
-    // external, fragile). route.abort() cancels the navigation; the page
-    // stays put with no side effects.
+    // external, fragile). route.fulfill() with a stub 200 page rather than
+    // route.abort() — abort produces a scary ERR_FAILED in headed/debug
+    // mode (the operator watching the test sees "site can't be reached");
+    // fulfill renders a clear placeholder explaining the intercept.
     let capturedUrl = null;
     await page.route("https://aviationweather.gov/**", (route) => {
       capturedUrl = route.request().url();
-      return route.abort();
+      return route.fulfill({
+        status: 200,
+        contentType: "text/html",
+        body:
+          `<!doctype html><html><body style="font-family:system-ui;padding:2em;line-height:1.5;">` +
+          `<h1 style="margin-top:0;">Test intercept</h1>` +
+          `<p>Playwright's <code>page.route</code> handler caught this navigation ` +
+          `before it left the test sandbox. Real users land on aviationweather.gov; ` +
+          `the test asserts on the URL below.</p>` +
+          `<pre style="background:#f4f4f4;padding:1em;overflow:auto;white-space:pre-wrap;">` +
+          route.request().url() +
+          `</pre></body></html>`,
+      });
     });
     await page.locator("#metar-form button[type='submit']").click();
 
