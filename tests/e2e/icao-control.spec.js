@@ -1300,11 +1300,20 @@ test.describe("ICAO tiles — exhaustive collapsed-mode drop-zone coverage", () 
 
       // Let the final dragover settle. Playwright's mouse.move resolves as
       // soon as the events are queued; the dragover handler that paints the
-      // marker class runs on a microtask after. Without this small wait the
-      // snapshot below catches an in-flight intermediate state (the marker
-      // still sitting on the tile the cursor crossed second-to-last), which
-      // races against the actual final state the user would see on screen.
-      await page.waitForTimeout(50);
+      // marker class runs on a microtask after. Poll for the EXPECTED
+      // marker to appear on the expected tile (auto-retries every poll
+      // interval, returns the instant it's visible) with a 500ms cap.
+      // .catch absorbs the timeout — in the known paint-race cases the
+      // marker never lands on the expected tile (Chrome coalesces the
+      // last few dragover events, indicator stays on a neighbour); we
+      // still want the actual-state snapshot below to record the
+      // discrepancy as indicator-only noise rather than blowing up.
+      if (wantIndicator) {
+        await page
+          .locator(`.tile[data-icao='${wantIndicator.icao}'].${wantIndicator.cls}`)
+          .waitFor({ state: "visible", timeout: 500 })
+          .catch(() => {});
+      }
 
       // Indicator snapshot BEFORE release. There should be exactly one
       // .drop-before OR .drop-after marker on the expected tile.
