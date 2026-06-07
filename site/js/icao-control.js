@@ -1470,28 +1470,62 @@ export function initIcaoControl({
       ? e.clientY < rect.top + rect.height / 2
       : e.clientX < rect.left + rect.width / 2;
   }
+  // Resolve a pointer event to the tile the drop should snap to.
+  //
+  // Fast path: cursor sits directly over a .tile — use closest() for the
+  // exact target (cheap, no sweep).
+  //
+  // Whitespace path: cursor is over the OL but NOT over any tile. That
+  // happens in three legitimate places a user might aim at and used to
+  // silently fail because closest() returned null:
+  //   - the gap between two consecutive tiles
+  //   - the trailing whitespace after the last tile (especially common
+  //     when the user means "put this at the end")
+  //   - the gap line between rows once the flex flow has wrapped
+  // Sweep every tile's bounding rect, pick the nearest by 2D distance,
+  // and let isDropBefore's midpoint test decide before-vs-after. Trailing
+  // falls out naturally: the cursor is past the last tile's right edge,
+  // which is past its midpoint, so isDropBefore returns false → drop-after
+  // → insert at end, which IS what "I let go in the trailing whitespace"
+  // should mean.
+  function findDropTarget(e) {
+    const direct = e.target.closest(".tile");
+    if (direct && direct.dataset.icao !== dragIcao) {
+      return { row: direct, before: isDropBefore(direct.getBoundingClientRect(), e) };
+    }
+    let nearest = null;
+    let nearestD2 = Infinity;
+    for (const t of tiles.children) {
+      if (t.dataset.icao === dragIcao) continue;
+      const r = t.getBoundingClientRect();
+      const dx = Math.max(r.left - e.clientX, 0, e.clientX - r.right);
+      const dy = Math.max(r.top  - e.clientY, 0, e.clientY - r.bottom);
+      const d2 = dx * dx + dy * dy; // squared, save the sqrt
+      if (d2 < nearestD2) { nearestD2 = d2; nearest = t; }
+    }
+    if (!nearest) return null;
+    return { row: nearest, before: isDropBefore(nearest.getBoundingClientRect(), e) };
+  }
   tiles.addEventListener("dragover", (e) => {
     if (!dragIcao) return;
-    const row = e.target.closest(".tile");
-    if (!row || row.dataset.icao === dragIcao) return;
+    const target = findDropTarget(e);
+    if (!target) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = "move";
-    const before = isDropBefore(row.getBoundingClientRect(), e);
     clearDropMarkers();
-    row.classList.add(before ? "drop-before" : "drop-after");
+    target.row.classList.add(target.before ? "drop-before" : "drop-after");
   });
   tiles.addEventListener("dragleave", (e) => {
     if (!tiles.contains(e.relatedTarget)) clearDropMarkers();
   });
   tiles.addEventListener("drop", (e) => {
     if (!dragIcao) return;
-    const row = e.target.closest(".tile");
-    if (!row || row.dataset.icao === dragIcao) { clearDropMarkers(); return; }
+    const target = findDropTarget(e);
+    if (!target) { clearDropMarkers(); return; }
     e.preventDefault();
-    const before = isDropBefore(row.getBoundingClientRect(), e);
-    const targetIndex = list.indexOf(row.dataset.icao);
+    const targetIndex = list.indexOf(target.row.dataset.icao);
     const fromIndex = list.indexOf(dragIcao);
-    let newIndex = before ? targetIndex : targetIndex + 1;
+    let newIndex = target.before ? targetIndex : targetIndex + 1;
     if (fromIndex < newIndex) newIndex -= 1;
     if (moveTo(dragIcao, newIndex)) commit();
     clearDropMarkers();
