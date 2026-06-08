@@ -849,11 +849,19 @@ export function initIcaoControl({
       btn.className = "icao-result";
       btn.dataset.addIcao = a.icao;
       // Reactivating an already-listed airport doesn't consume a list slot, so
-      // only block it when it's already active, or when the list is full AND
-      // this airport isn't already in it.
+      // only block when the list is full AND this airport isn't already in it
+      // AND it isn't currently active either (an active item can still be
+      // clicked — that's the toggle-off path; see the click handler below).
       const isListed = list.includes(a.icao);
       const isSelected = selected.includes(a.icao);
-      btn.disabled = isSelected || (full && !isListed);
+      btn.disabled = full && !isListed && !isSelected;
+      // Remember the row's PRE-CLICK state. The click handler uses it to
+      // reverse a toggle-off symmetrically: an "add" row toggles back to
+      // "add" (remove from list + selected), a "reactivate" row toggles
+      // back to "reactivate" (deselect, keep on list), an already-"active"
+      // row toggles to "reactivate" (deselect, keep on list).
+      btn.dataset.initialState = isSelected ? "active" : isListed ? "reactivate" : "add";
+      if (isSelected) btn.classList.add("is-active");
 
       const codeSpan = document.createElement("span");
       codeSpan.className = "icao-result-code";
@@ -987,7 +995,9 @@ export function initIcaoControl({
         if (s.name) btn.dataset.addName = String(s.name);
         const isListed = list.includes(s.icao);
         const isSelected = selected.includes(s.icao);
-        btn.disabled = isSelected || (full && !isListed);
+        btn.disabled = full && !isListed && !isSelected;
+        btn.dataset.initialState = isSelected ? "active" : isListed ? "reactivate" : "add";
+        if (isSelected) btn.classList.add("is-active");
 
         const codeSpan = document.createElement("span");
         codeSpan.className = "icao-result-code";
@@ -1325,26 +1335,46 @@ export function initIcaoControl({
     // visible state we missed via touchend on flaky touch hardware.
     cancelLongPress();
     hideResultTooltip();
+    const icao = btn.dataset.addIcao;
+    const hint = btn.querySelector(".icao-result-hint");
+    // Toggle-off path: row is currently active (the user is clicking it a
+    // second or subsequent time). Reverse the original action symmetrically
+    // based on the pre-click initial state we stashed during render:
+    //   "add"        → remove from list + selected (back to plain "add")
+    //   "reactivate" → deselect only, keep on list (back to "reactivate")
+    //   "active"     → deselect only, keep on list (becomes "reactivate")
+    if (btn.classList.contains("is-active") && selected.includes(icao)) {
+      if (btn.dataset.initialState === "add") {
+        if (removeFromList(icao)) commit();
+      } else {
+        toggleSelected(icao);
+        commit();
+      }
+      btn.classList.remove("is-active");
+      if (hint) hint.textContent = list.includes(icao) ? "reactivate" : "add";
+      query.focus();
+      return;
+    }
     // Online result rows carry a `data-add-name` with the AWC-supplied
     // station name. Persist it so the tile can render the friendly name
     // (e.g. "Stampede Pass, WA, US" for KSMP) even though KSMP isn't in
     // our bundled airports dataset. Tile renders pull from describeIcao,
     // which now consults the customNames map.
     if (btn.dataset.addName) {
-      rememberCustomName(btn.dataset.addIcao, btn.dataset.addName);
+      rememberCustomName(icao, btn.dataset.addName);
     }
-    if (addAndSelect(btn.dataset.addIcao)) {
+    if (addAndSelect(icao)) {
       // Keep the query + dropdown visible after a selection so the user can
       // add more results from the same search. Update the clicked row in
-      // place (active + disabled) so duplicates aren't possible. Two explicit
-      // dismissals end the search session:
+      // place — the row stays clickable now (no `disabled = true`) so a
+      // subsequent click toggles it back off. Two explicit dismissals end
+      // the search session:
       //   1. × clear button → empties the query and snaps back to the prior
       //      expanded/collapsed state (preserving auto-expand semantics)
       //   2. Edit toggle to collapse → also clears the search (see the
       //      manageToggle handler below)
-      const hint = btn.querySelector(".icao-result-hint");
       if (hint) hint.textContent = "active";
-      btn.disabled = true;
+      btn.classList.add("is-active");
       query.focus();
     }
   });
@@ -1470,28 +1500,62 @@ export function initIcaoControl({
       ? e.clientY < rect.top + rect.height / 2
       : e.clientX < rect.left + rect.width / 2;
   }
+  // Resolve a pointer event to the tile the drop should snap to.
+  //
+  // Fast path: cursor sits directly over a .tile — use closest() for the
+  // exact target (cheap, no sweep).
+  //
+  // Whitespace path: cursor is over the OL but NOT over any tile. That
+  // happens in three legitimate places a user might aim at and used to
+  // silently fail because closest() returned null:
+  //   - the gap between two consecutive tiles
+  //   - the trailing whitespace after the last tile (especially common
+  //     when the user means "put this at the end")
+  //   - the gap line between rows once the flex flow has wrapped
+  // Sweep every tile's bounding rect, pick the nearest by 2D distance,
+  // and let isDropBefore's midpoint test decide before-vs-after. Trailing
+  // falls out naturally: the cursor is past the last tile's right edge,
+  // which is past its midpoint, so isDropBefore returns false → drop-after
+  // → insert at end, which IS what "I let go in the trailing whitespace"
+  // should mean.
+  function findDropTarget(e) {
+    const direct = e.target.closest(".tile");
+    if (direct && direct.dataset.icao !== dragIcao) {
+      return { row: direct, before: isDropBefore(direct.getBoundingClientRect(), e) };
+    }
+    let nearest = null;
+    let nearestD2 = Infinity;
+    for (const t of tiles.children) {
+      if (t.dataset.icao === dragIcao) continue;
+      const r = t.getBoundingClientRect();
+      const dx = Math.max(r.left - e.clientX, 0, e.clientX - r.right);
+      const dy = Math.max(r.top  - e.clientY, 0, e.clientY - r.bottom);
+      const d2 = dx * dx + dy * dy; // squared, save the sqrt
+      if (d2 < nearestD2) { nearestD2 = d2; nearest = t; }
+    }
+    if (!nearest) return null;
+    return { row: nearest, before: isDropBefore(nearest.getBoundingClientRect(), e) };
+  }
   tiles.addEventListener("dragover", (e) => {
     if (!dragIcao) return;
-    const row = e.target.closest(".tile");
-    if (!row || row.dataset.icao === dragIcao) return;
+    const target = findDropTarget(e);
+    if (!target) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = "move";
-    const before = isDropBefore(row.getBoundingClientRect(), e);
     clearDropMarkers();
-    row.classList.add(before ? "drop-before" : "drop-after");
+    target.row.classList.add(target.before ? "drop-before" : "drop-after");
   });
   tiles.addEventListener("dragleave", (e) => {
     if (!tiles.contains(e.relatedTarget)) clearDropMarkers();
   });
   tiles.addEventListener("drop", (e) => {
     if (!dragIcao) return;
-    const row = e.target.closest(".tile");
-    if (!row || row.dataset.icao === dragIcao) { clearDropMarkers(); return; }
+    const target = findDropTarget(e);
+    if (!target) { clearDropMarkers(); return; }
     e.preventDefault();
-    const before = isDropBefore(row.getBoundingClientRect(), e);
-    const targetIndex = list.indexOf(row.dataset.icao);
+    const targetIndex = list.indexOf(target.row.dataset.icao);
     const fromIndex = list.indexOf(dragIcao);
-    let newIndex = before ? targetIndex : targetIndex + 1;
+    let newIndex = target.before ? targetIndex : targetIndex + 1;
     if (fromIndex < newIndex) newIndex -= 1;
     if (moveTo(dragIcao, newIndex)) commit();
     clearDropMarkers();

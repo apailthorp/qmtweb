@@ -597,6 +597,17 @@ button {
   cursor: not-allowed;
 }
 
+/* Active-state row — toggled-on item the user can click again to toggle off.
+ * Visual cue is in the hint text (.icao-result-hint becomes accent-coloured
+ * and bold below). The row body keeps full --fg contrast so the hover state
+ * stays readable. Previously the "active" cue was `disabled` which painted
+ * the row with --fg-muted; combined with the hover/focus light-blue
+ * background that produced a low-contrast "washed out" look on rollover. */
+.icao-result.is-active .icao-result-hint {
+  color: var(--accent);
+  font-weight: 600;
+}
+
 .icao-result-code em {
   font-style: normal;
   color: var(--fg-muted);
