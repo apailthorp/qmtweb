@@ -849,11 +849,19 @@ export function initIcaoControl({
       btn.className = "icao-result";
       btn.dataset.addIcao = a.icao;
       // Reactivating an already-listed airport doesn't consume a list slot, so
-      // only block it when it's already active, or when the list is full AND
-      // this airport isn't already in it.
+      // only block when the list is full AND this airport isn't already in it
+      // AND it isn't currently active either (an active item can still be
+      // clicked — that's the toggle-off path; see the click handler below).
       const isListed = list.includes(a.icao);
       const isSelected = selected.includes(a.icao);
-      btn.disabled = isSelected || (full && !isListed);
+      btn.disabled = full && !isListed && !isSelected;
+      // Remember the row's PRE-CLICK state. The click handler uses it to
+      // reverse a toggle-off symmetrically: an "add" row toggles back to
+      // "add" (remove from list + selected), a "reactivate" row toggles
+      // back to "reactivate" (deselect, keep on list), an already-"active"
+      // row toggles to "reactivate" (deselect, keep on list).
+      btn.dataset.initialState = isSelected ? "active" : isListed ? "reactivate" : "add";
+      if (isSelected) btn.classList.add("is-active");
 
       const codeSpan = document.createElement("span");
       codeSpan.className = "icao-result-code";
@@ -987,7 +995,9 @@ export function initIcaoControl({
         if (s.name) btn.dataset.addName = String(s.name);
         const isListed = list.includes(s.icao);
         const isSelected = selected.includes(s.icao);
-        btn.disabled = isSelected || (full && !isListed);
+        btn.disabled = full && !isListed && !isSelected;
+        btn.dataset.initialState = isSelected ? "active" : isListed ? "reactivate" : "add";
+        if (isSelected) btn.classList.add("is-active");
 
         const codeSpan = document.createElement("span");
         codeSpan.className = "icao-result-code";
@@ -1325,26 +1335,46 @@ export function initIcaoControl({
     // visible state we missed via touchend on flaky touch hardware.
     cancelLongPress();
     hideResultTooltip();
+    const icao = btn.dataset.addIcao;
+    const hint = btn.querySelector(".icao-result-hint");
+    // Toggle-off path: row is currently active (the user is clicking it a
+    // second or subsequent time). Reverse the original action symmetrically
+    // based on the pre-click initial state we stashed during render:
+    //   "add"        → remove from list + selected (back to plain "add")
+    //   "reactivate" → deselect only, keep on list (back to "reactivate")
+    //   "active"     → deselect only, keep on list (becomes "reactivate")
+    if (btn.classList.contains("is-active") && selected.includes(icao)) {
+      if (btn.dataset.initialState === "add") {
+        if (removeFromList(icao)) commit();
+      } else {
+        toggleSelected(icao);
+        commit();
+      }
+      btn.classList.remove("is-active");
+      if (hint) hint.textContent = list.includes(icao) ? "reactivate" : "add";
+      query.focus();
+      return;
+    }
     // Online result rows carry a `data-add-name` with the AWC-supplied
     // station name. Persist it so the tile can render the friendly name
     // (e.g. "Stampede Pass, WA, US" for KSMP) even though KSMP isn't in
     // our bundled airports dataset. Tile renders pull from describeIcao,
     // which now consults the customNames map.
     if (btn.dataset.addName) {
-      rememberCustomName(btn.dataset.addIcao, btn.dataset.addName);
+      rememberCustomName(icao, btn.dataset.addName);
     }
-    if (addAndSelect(btn.dataset.addIcao)) {
+    if (addAndSelect(icao)) {
       // Keep the query + dropdown visible after a selection so the user can
       // add more results from the same search. Update the clicked row in
-      // place (active + disabled) so duplicates aren't possible. Two explicit
-      // dismissals end the search session:
+      // place — the row stays clickable now (no `disabled = true`) so a
+      // subsequent click toggles it back off. Two explicit dismissals end
+      // the search session:
       //   1. × clear button → empties the query and snaps back to the prior
       //      expanded/collapsed state (preserving auto-expand semantics)
       //   2. Edit toggle to collapse → also clears the search (see the
       //      manageToggle handler below)
-      const hint = btn.querySelector(".icao-result-hint");
       if (hint) hint.textContent = "active";
-      btn.disabled = true;
+      btn.classList.add("is-active");
       query.focus();
     }
   });

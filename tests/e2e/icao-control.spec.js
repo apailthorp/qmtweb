@@ -263,21 +263,74 @@ test.describe("ICAO tiles — local autocomplete search", () => {
     await result.click();
 
     await expect(page.locator(tile("KSFO"))).toHaveClass(/\bis-active\b/);
-    // v1.4.0 keep-results-visible UX: the query + dropdown stay up so the
-    // user can add more from the same search. The clicked row goes
-    // disabled + "active" so it can't be added twice; the rest stay clickable.
+    // Keep-results-visible UX: the query + dropdown stay up so the user can
+    // add more from the same search. The clicked row goes into the
+    // "is-active" state (accent-coloured "active" hint) but stays CLICKABLE
+    // — a second click toggles it back off (see the toggle tests below).
     await expect(page.locator("#icao-query")).toHaveValue("KSFO");
-    await expect(result).toBeDisabled();
+    await expect(result).toBeEnabled();
+    await expect(result).toHaveClass(/\bis-active\b/);
     await expect(result).toContainText(/active/i);
     expect(await idsCodes(page)).toEqual([...DEFAULT_6, "KSFO"]);
   });
 
-  test("an already-active airport shows 'active' and is disabled", async ({ page }) => {
+  test("an already-active airport shows 'active' and stays clickable for toggle-off", async ({ page }) => {
     await page.locator("#icao-query").fill("KPAE");
     const btn = page.locator("#icao-search-results button[data-add-icao='KPAE']");
     await expect(btn).toBeVisible({ timeout: 10_000 });
-    await expect(btn).toBeDisabled();
+    await expect(btn).toBeEnabled();
+    await expect(btn).toHaveClass(/\bis-active\b/);
     await expect(btn).toContainText(/active/i);
+  });
+
+  test("clicking an active result toggles it off back to its pre-click state", async ({ page }) => {
+    // KSFO isn't in the default list — click adds it (initialState = "add"),
+    // toggle off should remove it from list + selected, hint reverts to "add".
+    const q = page.locator("#icao-query");
+    await q.fill("KSFO");
+    const result = page.locator("#icao-search-results button[data-add-icao='KSFO']");
+    await expect(result).toBeVisible({ timeout: 10_000 });
+    await expect(result).toContainText(/add/i);
+
+    await result.click();
+    await expect(result).toHaveClass(/\bis-active\b/);
+    await expect(result).toContainText(/active/i);
+    expect(await idsCodes(page)).toContain("KSFO");
+
+    // Toggle off: row reverts to "add" because KSFO wasn't on the list before
+    // this search session — symmetric reversal of the original add.
+    await result.click();
+    await expect(result).not.toHaveClass(/\bis-active\b/);
+    await expect(result).toContainText(/add/i);
+    expect(await idsCodes(page)).not.toContain("KSFO");
+    await expect(page.locator(tile("KSFO"))).toHaveCount(0);
+
+    // And back again: a third click re-adds + re-selects.
+    await result.click();
+    await expect(result).toHaveClass(/\bis-active\b/);
+    expect(await idsCodes(page)).toContain("KSFO");
+  });
+
+  test("toggling off an already-listed airport keeps it on the list and shows 'reactivate'", async ({ page }) => {
+    // KSEA starts listed-but-inactive (initialState = "reactivate"). Click
+    // → "active"; click again → BACK to "reactivate" (deselect, stay on list).
+    // Distinguishes this from the "add" case which removes from list entirely.
+    await page.locator("#icao-query").fill("KSEA");
+    const btn = page.locator("#icao-search-results button[data-add-icao='KSEA']");
+    await expect(btn).toBeVisible({ timeout: 10_000 });
+    await expect(btn).toContainText(/reactivate/i);
+
+    await btn.click();
+    await expect(btn).toHaveClass(/\bis-active\b/);
+    await expect(btn).toContainText(/active/i);
+    expect(await idsCodes(page)).toContain("KSEA");
+
+    await btn.click();
+    await expect(btn).not.toHaveClass(/\bis-active\b/);
+    await expect(btn).toContainText(/reactivate/i);
+    expect(await idsCodes(page)).not.toContain("KSEA");
+    // Tile stayed on the list — it just dropped out of #ids.
+    await expect(page.locator(tile("KSEA"))).toHaveCount(1);
   });
 
   test("a listed-but-inactive airport shows 'reactivate' and re-activates it", async ({ page }) => {
@@ -804,12 +857,14 @@ test.describe("ICAO tiles — online search (mocked PHP proxy)", () => {
     await page.locator("#icao-search-external").click();
     await expect(page.locator("#manage-toggle")).toHaveAttribute("aria-expanded", "true");
 
-    // v1.4.0: picking a result no longer auto-collapses. Panel stays
-    // expanded; the dropdown stays visible; the picked row goes disabled.
+    // Picking a result no longer auto-collapses. Panel stays expanded; the
+    // dropdown stays visible; the picked row flips to is-active state but
+    // stays clickable so a second click toggles it back off.
     const result = page.locator("#icao-search-results button[data-add-icao='KGEG']");
     await result.click();
     await expect(page.locator("#manage-toggle")).toHaveAttribute("aria-expanded", "true");
-    await expect(result).toBeDisabled();
+    await expect(result).toHaveClass(/\bis-active\b/);
+    await expect(result).toBeEnabled();
     await expect(page.locator("#icao-query")).toHaveValue("Spokane");
     expect(await idsCodes(page)).toContain("KGEG");
 
@@ -841,9 +896,11 @@ test.describe("ICAO tiles — online search (mocked PHP proxy)", () => {
     await result.click();
     // Still expanded — the user is in edit mode on purpose.
     await expect(page.locator("#manage-toggle")).toHaveAttribute("aria-expanded", "true");
-    // v1.4.0: query + dropdown stay; selected row disabled.
+    // Query + dropdown stay; selected row is in is-active state and stays
+    // clickable for toggle-off.
     await expect(page.locator("#icao-query")).toHaveValue("Spokane");
-    await expect(result).toBeDisabled();
+    await expect(result).toHaveClass(/\bis-active\b/);
+    await expect(result).toBeEnabled();
 
     // × clears query but does NOT collapse — only the auto-expand path snaps
     // back. The user manually opened this panel; they keep edit mode.
