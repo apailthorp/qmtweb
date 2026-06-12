@@ -12,6 +12,25 @@
 #
 # Full design + troubleshooting: docs/VERSIONING.md
 <IfModule mod_headers.c>
+  # --- Security headers --------------------------------------------------
+  # Global: applies to every response including the /api/*.php JSON.
+  Header always set X-Content-Type-Options "nosniff"
+  Header always set Referrer-Policy "strict-origin-when-cross-origin"
+  # HSTS: pailthorp.net is HTTPS-only. Apex only (no includeSubDomains /
+  # preload) so this can't break any future subdomain served differently.
+  Header always set Strict-Transport-Security "max-age=31536000"
+
+  # CSP on markup only (it has no effect on JSON/CSS responses). The site is
+  # same-origin ES modules with no inline script/style, no images, and all
+  # fetches go to ./api/ + ./data/ — so everything locks to 'self'. The one
+  # external grant: the station form submits to aviationweather.gov
+  # (form-action). External radar/forecast links are plain navigation, which
+  # CSP doesn't restrict. frame-ancestors replaces X-Frame-Options.
+  <FilesMatch "\.html$">
+    Header always set Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; form-action 'self' https://aviationweather.gov; base-uri 'none'; frame-ancestors 'none'"
+  </FilesMatch>
+
+  # --- Cache policy --------------------------------------------------------
   <FilesMatch "\.(html|css|js|mjs)$">
     Header always set Cache-Control "no-cache, must-revalidate"
     Header always unset Expires
