@@ -25,6 +25,12 @@
 
 declare(strict_types=1);
 require __DIR__ . '/_lib.php';
+
+// No upstream calls here, but gate + a generous budget anyway so this can't
+// be used as a free request amplifier against the host.
+enforce_same_origin_fetch();
+rate_limit_or_429('health', 60, 60);
+
 require __DIR__ . '/providers/intent-gemini.php';
 require __DIR__ . '/providers/intent-openrouter.php';
 require __DIR__ . '/providers/intent-cerebras.php';

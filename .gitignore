@@ -44,8 +44,10 @@ qmtweb-secrets.php
 # Operational state (above docroot on the host; never committed)
 #   tier2-state: sticky provider pointer + rollover history
 #   stats:       per-request JSONL log for offline analysis
+#   ratelimit:   per-IP fixed-window rate-limit counters
 qmtweb-tier2-state.json
 qmtweb-stats.jsonl
+qmtweb-ratelimit/
 
 # Claude Code local-only settings
 .claude/settings.local.json

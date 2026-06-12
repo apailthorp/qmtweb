@@ -79,8 +79,15 @@ const PROVIDER_CHAIN = [
 
 $reqStartMs = (int) (microtime(true) * 1000);
 
+// Abuse controls before any real work: origin gate, then rate limit (invalid
+// requests still consume budget), then input validation. This endpoint fans
+// out to LLM providers + Nominatim + AWC, so it gets the tightest budget.
+enforce_same_origin_fetch();
+rate_limit_or_429('resolve', 30, 60);
+
 $q = trim($_GET['q'] ?? '');
 if ($q === '') json_err('Type a place, ZIP, or airport to search online.', 422);
+if (strlen($q) > MAX_QUERY_LEN) json_err('Query too long (max ' . MAX_QUERY_LEN . ' characters).', 422);
 
 // Detect "TAF" in the raw query BEFORE deterministic_intent strips it as
 // filler. When present, narrow the bbox lookup to TAF-publishing stations
