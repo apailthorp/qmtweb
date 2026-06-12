@@ -521,7 +521,13 @@ function geocode_place(string $q): ?array {
             cache_set($cacheKey, $out);
             return $out;
         }
-        cache_set($missKey, ['miss' => true]);
+        // Only cache a miss on a definitive upstream answer ($data is a
+        // parsed response with no usable place). $data === null is transport
+        // failure / upstream error — don't pin that as "not found" for 15
+        // minutes. (zippopotam 404s unknown ZIPs, which http_get_json also
+        // maps to null, so unknown ZIPs go uncached — acceptable: the ZIP
+        // space is regex-bounded and zippopotam isn't fair-use-sensitive.)
+        if ($data !== null) cache_set($missKey, ['miss' => true]);
         return null;
     }
 
@@ -552,7 +558,10 @@ function geocode_place(string $q): ?array {
         cache_set($cacheKey, $out);
         return $out;
     }
-    cache_set($missKey, ['miss' => true]);
+    // Same rule as the ZIP branch: Nominatim's "no results" is a 200 with []
+    // (parsed → array), which we DO cache; null means transport failure /
+    // upstream error and must not be pinned as a miss.
+    if ($data !== null) cache_set($missKey, ['miss' => true]);
     return null;
 }
 

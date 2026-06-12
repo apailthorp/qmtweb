@@ -14,7 +14,7 @@ rate_limit_or_429('geocode', 30, 60);
 
 $q = trim($_GET['q'] ?? '');
 if ($q === '') json_err('Missing q (a ZIP or place name).', 422);
-if (strlen($q) > MAX_QUERY_LEN) json_err('Query too long (max ' . MAX_QUERY_LEN . ' characters).', 422);
+if (mb_strlen($q, 'UTF-8') > MAX_QUERY_LEN) json_err('Query too long (max ' . MAX_QUERY_LEN . ' characters).', 422);
 
 $result = geocode_place($q);
 if ($result === null) json_err("Couldn't locate \"$q\".", 404);

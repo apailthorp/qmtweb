@@ -87,7 +87,7 @@ rate_limit_or_429('resolve', 30, 60);
 
 $q = trim($_GET['q'] ?? '');
 if ($q === '') json_err('Type a place, ZIP, or airport to search online.', 422);
-if (strlen($q) > MAX_QUERY_LEN) json_err('Query too long (max ' . MAX_QUERY_LEN . ' characters).', 422);
+if (mb_strlen($q, 'UTF-8') > MAX_QUERY_LEN) json_err('Query too long (max ' . MAX_QUERY_LEN . ' characters).', 422);
 
 // Detect "TAF" in the raw query BEFORE deterministic_intent strips it as
 // filler. When present, narrow the bbox lookup to TAF-publishing stations
