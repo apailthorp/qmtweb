@@ -16,6 +16,10 @@ ini_set('display_errors', '0');
 const HTTP_TIMEOUT = 5;  // seconds per upstream call
 const USER_AGENT   = 'qmtweb/1.x (+https://pailthorp.net; METAR station lookup)';
 
+// Longest ?q= we accept. Generous for any real place-name query, but stops
+// arbitrarily large payloads flowing into the LLM prompt / sha1 / logs.
+const MAX_QUERY_LEN = 200;
+
 function json_out(array $data, int $status = 200): void {
     http_response_code($status);
     header('Content-Type: application/json; charset=utf-8');
@@ -26,6 +30,114 @@ function json_out(array $data, int $status = 200): void {
 function json_err(string $message, int $status = 400): void {
     header('Cache-Control: no-store');
     json_out(['error' => $message], $status);
+}
+
+// --- Request guards -------------------------------------------------------
+// The endpoints are unauthenticated, so these are the abuse controls:
+//   1. enforce_same_origin_fetch() — reject browser-initiated cross-site
+//      fetches via the Sec-Fetch-Site header. Soft gate: non-browser clients
+//      (curl etc.) don't send the header and pass through to the rate limit.
+//   2. rate_limit_or_429() — per-IP fixed-window counter so a scripted loop
+//      can't drain the free-tier LLM quotas or hammer Nominatim from this
+//      host's SHARED egress IP (a fair-use ban there hits every tenant).
+//
+// Call order in endpoints: origin gate → rate limit → input validation, so
+// invalid requests still consume rate-limit budget.
+
+function enforce_same_origin_fetch(): void {
+    $site = $_SERVER['HTTP_SEC_FETCH_SITE'] ?? '';
+    // 'same-site' covers www/apex variants; 'none' is direct navigation
+    // (typing the URL — useful for testing). Absent header → not a modern
+    // browser fetch; let the rate limit handle it.
+    if ($site !== '' && !in_array($site, ['same-origin', 'same-site', 'none'], true)) {
+        json_err('Cross-site requests are not allowed.', 403);
+    }
+}
+
+// Fixed-window per-IP limiter. State lives in small per-IP files ABOVE
+// docroot (same pattern as qmtweb-tier2-state.json): not web-accessible and
+// FTPS deploys never touch it. Fails OPEN on any filesystem trouble — this
+// protects upstream quotas, it must never take the endpoint down with it.
+const RATE_LIMIT_DIR = __DIR__ . '/../../qmtweb-ratelimit';
+
+// Pepper for the per-IP filename digest. An unkeyed hash of bucket:ip would
+// be reversible by brute force (the IPv4 space is small), defeating the
+// no-raw-IPs-on-disk policy if the filenames leak — e.g. in a partial FTP
+// harvest alongside the stats log. So the digest is keyed with a random
+// pepper, self-provisioned on first use as a 0600 dotfile next to the
+// counters (glob() in the GC skips dotfiles, so it's never swept). Not
+// operator-provisioned: anyone who can read this dir can read
+// qmtweb-secrets.php in the same parent, so a configured secret would add
+// nothing — the property defended is partial leaks, not account compromise.
+// Returns null when the pepper can't be read or created.
+function rate_limit_pepper(): ?string {
+    $f = RATE_LIMIT_DIR . '/.pepper';
+    $raw = @file_get_contents($f);
+    // Require the exact shape we write (bin2hex(random_bytes(32)) = 64 hex
+    // chars) so a truncated/corrupt file (partial write on disk-full, etc.)
+    // is rejected and regenerated rather than used as a weak key.
+    if (is_string($raw) && strlen($raw) === 64 && ctype_xdigit($raw)) return $raw;
+    try {
+        $raw = bin2hex(random_bytes(32));
+    } catch (Throwable) {
+        return null;
+    }
+    // Concurrent first requests may race here; last write wins and any
+    // counters keyed under the loser are orphaned until the GC sweeps them.
+    if (@file_put_contents($f, $raw, LOCK_EX) === false) return null;
+    @chmod($f, 0600);
+    return $raw;
+}
+
+function rate_limit_or_429(string $bucket, int $limit = 30, int $window = 60): void {
+    $ip = $_SERVER['REMOTE_ADDR'] ?? '';
+    if ($ip === '') return;
+    if (!is_dir(RATE_LIMIT_DIR) && !@mkdir(RATE_LIMIT_DIR, 0700, true) && !is_dir(RATE_LIMIT_DIR)) {
+        return;
+    }
+    // Keyed digest so raw client IPs never persist on disk AND can't be
+    // recovered from the filenames (mirrors the no-IP policy of the stats
+    // log). No pepper → fail open like every other filesystem failure here;
+    // there is deliberately no unkeyed fallback.
+    $pepper = rate_limit_pepper();
+    if ($pepper === null) return;
+    $file = RATE_LIMIT_DIR . '/' . hash_hmac('sha256', $bucket . ':' . $ip, $pepper);
+    $fh = @fopen($file, 'c+');
+    if ($fh === false) return;
+    if (!flock($fh, LOCK_EX)) { fclose($fh); return; }
+
+    $now = time();
+    $start = $now;
+    $count = 0;
+    $raw = stream_get_contents($fh);
+    if (is_string($raw) && preg_match('/^(\d+) (\d+)$/', trim($raw), $m)) {
+        $start = (int) $m[1];
+        $count = (int) $m[2];
+    }
+    if ($now - $start >= $window) { // window expired → fresh one
+        $start = $now;
+        $count = 0;
+    }
+    $count++;
+    rewind($fh);
+    ftruncate($fh, 0);
+    fwrite($fh, "$start $count");
+    flock($fh, LOCK_UN);
+    fclose($fh);
+
+    // Opportunistic GC so the dir doesn't accumulate one file per IP forever.
+    // ~2% of requests sweep entries idle for 10+ windows.
+    if (random_int(1, 50) === 1) {
+        foreach (glob(RATE_LIMIT_DIR . '/*') ?: [] as $f) {
+            if ($now - (int) @filemtime($f) > $window * 10) @unlink($f);
+        }
+    }
+
+    if ($count > $limit) {
+        $retry = max(1, $window - ($now - $start));
+        header('Retry-After: ' . $retry);
+        json_err('Too many requests — try again shortly.', 429);
+    }
 }
 
 // GET JSON over HTTPS via curl. Returns a decoded array, or null on any failure.
@@ -405,6 +517,11 @@ function qmtweb_stats_hash_query(string $q): string {
 // Geocode a 5-digit US ZIP (zippopotam) or a place name (Nominatim) to
 // { lat, lon, label }. Cached aggressively (locations are stable; Nominatim
 // fair-use). Returns null if nothing matched.
+// Negative-result TTL: short enough that a transient upstream outage doesn't
+// pin a real place as "not found" for long, long enough that repeated garbage
+// queries (typos, abuse probes) don't re-hit Nominatim every time.
+const GEO_NEGATIVE_TTL = 900; // 15 minutes
+
 function geocode_place(string $q): ?array {
     $q = trim($q);
     if ($q === '') return null;
@@ -412,6 +529,11 @@ function geocode_place(string $q): ?array {
     $cacheKey = 'geo:' . strtolower($q);
     $cached = cache_get($cacheKey, 30 * 86400);
     if (is_array($cached)) return $cached;
+
+    // Cached miss? Separate key (not a sentinel under 'geo:') so positive
+    // entries keep their 30-day TTL while misses expire on their own clock.
+    $missKey = 'geo-miss:' . strtolower($q);
+    if (cache_get($missKey, GEO_NEGATIVE_TTL) !== null) return null;
 
     if (preg_match('/^\d{5}$/', $q)) {
         $data = http_get_json("https://api.zippopotam.us/us/$q");
@@ -432,6 +554,13 @@ function geocode_place(string $q): ?array {
             cache_set($cacheKey, $out);
             return $out;
         }
+        // Only cache a miss on a definitive upstream answer ($data is a
+        // parsed response with no usable place). $data === null is transport
+        // failure / upstream error — don't pin that as "not found" for 15
+        // minutes. (zippopotam 404s unknown ZIPs, which http_get_json also
+        // maps to null, so unknown ZIPs go uncached — acceptable: the ZIP
+        // space is regex-bounded and zippopotam isn't fair-use-sensitive.)
+        if ($data !== null) cache_set($missKey, ['miss' => true]);
         return null;
     }
 
@@ -462,6 +591,10 @@ function geocode_place(string $q): ?array {
         cache_set($cacheKey, $out);
         return $out;
     }
+    // Same rule as the ZIP branch: Nominatim's "no results" is a 200 with []
+    // (parsed → array), which we DO cache; null means transport failure /
+    // upstream error and must not be pinned as a miss.
+    if ($data !== null) cache_set($missKey, ['miss' => true]);
     return null;
 }
 
