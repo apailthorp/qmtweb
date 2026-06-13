@@ -73,7 +73,10 @@ const RATE_LIMIT_DIR = __DIR__ . '/../../qmtweb-ratelimit';
 function rate_limit_pepper(): ?string {
     $f = RATE_LIMIT_DIR . '/.pepper';
     $raw = @file_get_contents($f);
-    if (is_string($raw) && strlen($raw) >= 32) return $raw;
+    // Require the exact shape we write (bin2hex(random_bytes(32)) = 64 hex
+    // chars) so a truncated/corrupt file (partial write on disk-full, etc.)
+    // is rejected and regenerated rather than used as a weak key.
+    if (is_string($raw) && strlen($raw) === 64 && ctype_xdigit($raw)) return $raw;
     try {
         $raw = bin2hex(random_bytes(32));
     } catch (Throwable) {
