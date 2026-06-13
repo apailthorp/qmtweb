@@ -60,15 +60,48 @@ function enforce_same_origin_fetch(): void {
 // protects upstream quotas, it must never take the endpoint down with it.
 const RATE_LIMIT_DIR = __DIR__ . '/../../qmtweb-ratelimit';
 
+// Pepper for the per-IP filename digest. An unkeyed hash of bucket:ip would
+// be reversible by brute force (the IPv4 space is small), defeating the
+// no-raw-IPs-on-disk policy if the filenames leak — e.g. in a partial FTP
+// harvest alongside the stats log. So the digest is keyed with a random
+// pepper, self-provisioned on first use as a 0600 dotfile next to the
+// counters (glob() in the GC skips dotfiles, so it's never swept). Not
+// operator-provisioned: anyone who can read this dir can read
+// qmtweb-secrets.php in the same parent, so a configured secret would add
+// nothing — the property defended is partial leaks, not account compromise.
+// Returns null when the pepper can't be read or created.
+function rate_limit_pepper(): ?string {
+    $f = RATE_LIMIT_DIR . '/.pepper';
+    $raw = @file_get_contents($f);
+    // Require the exact shape we write (bin2hex(random_bytes(32)) = 64 hex
+    // chars) so a truncated/corrupt file (partial write on disk-full, etc.)
+    // is rejected and regenerated rather than used as a weak key.
+    if (is_string($raw) && strlen($raw) === 64 && ctype_xdigit($raw)) return $raw;
+    try {
+        $raw = bin2hex(random_bytes(32));
+    } catch (Throwable) {
+        return null;
+    }
+    // Concurrent first requests may race here; last write wins and any
+    // counters keyed under the loser are orphaned until the GC sweeps them.
+    if (@file_put_contents($f, $raw, LOCK_EX) === false) return null;
+    @chmod($f, 0600);
+    return $raw;
+}
+
 function rate_limit_or_429(string $bucket, int $limit = 30, int $window = 60): void {
     $ip = $_SERVER['REMOTE_ADDR'] ?? '';
     if ($ip === '') return;
     if (!is_dir(RATE_LIMIT_DIR) && !@mkdir(RATE_LIMIT_DIR, 0700, true) && !is_dir(RATE_LIMIT_DIR)) {
         return;
     }
-    // Hash the key so raw client IPs never persist on disk (mirrors the
-    // no-IP policy of the stats log).
-    $file = RATE_LIMIT_DIR . '/' . sha1($bucket . ':' . $ip);
+    // Keyed digest so raw client IPs never persist on disk AND can't be
+    // recovered from the filenames (mirrors the no-IP policy of the stats
+    // log). No pepper → fail open like every other filesystem failure here;
+    // there is deliberately no unkeyed fallback.
+    $pepper = rate_limit_pepper();
+    if ($pepper === null) return;
+    $file = RATE_LIMIT_DIR . '/' . hash_hmac('sha256', $bucket . ':' . $ip, $pepper);
     $fh = @fopen($file, 'c+');
     if ($fh === false) return;
     if (!flock($fh, LOCK_EX)) { fclose($fh); return; }
